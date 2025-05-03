@@ -2,6 +2,7 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import logging
+from datetime import datetime, timedelta
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -9,6 +10,28 @@ logger = logging.getLogger(__name__)
 
 # Configure Streamlit page
 st.set_page_config(page_title="PrintEasy Admin Panel", layout="wide")
+
+# Function to clean completed requests older than 12 hours
+def clean_old_completed_requests():
+    try:
+        conn = sqlite3.connect('requests.db')
+        c = conn.cursor()
+        # Calculate cutoff time (12 hours ago)
+        cutoff_time = (datetime.now() - timedelta(hours=12)).isoformat()
+        # Fetch completed requests older than cutoff
+        c.execute("SELECT id, submitted_at FROM print_requests WHERE status = 'Done' AND submitted_at < ?", (cutoff_time,))
+        old_requests = c.fetchall()
+        # Delete old requests
+        for request_id, submitted_at in old_requests:
+            c.execute("DELETE FROM print_requests WHERE id = ?", (request_id,))
+            logger.info(f"Deleted completed request ID {request_id} submitted at {submitted_at}")
+        conn.commit()
+        logger.info(f"Cleaned {len(old_requests)} completed requests older than 12 hours")
+    except Exception as e:
+        logger.error(f"Failed to clean old completed requests: {str(e)}")
+        st.error(f"Database cleanup error: {str(e)}")
+    finally:
+        conn.close()
 
 # Function to mark request as done
 def mark_as_done(request_id):
@@ -51,6 +74,9 @@ st.title("PrintEasy Admin Panel (Pickup Requests)")
 
 if not check_password():
     st.stop()
+
+# Clean old completed requests
+clean_old_completed_requests()
 
 # Fetch pending and completed requests
 try:
