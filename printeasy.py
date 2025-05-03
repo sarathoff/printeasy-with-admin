@@ -40,28 +40,28 @@ def init_db():
                       pages INTEGER,
                       copies INTEGER,
                       is_color BOOLEAN,
-                      print_layout TEXT,
+                      Layout TEXT,
                       pages_per_sheet TEXT,
                       price REAL,
                       submitted_at TEXT,
                       status TEXT)''')
         conn.commit()
-        logger.info("SQLite database initialized successfully")
+        logger.info("SQLite database initialized successfully with correct schema")
     except Exception as e:
         logger.error(f"Failed to initialize SQLite database: {str(e)}")
         st.error(f"Database error: {str(e)}")
     finally:
         conn.close()
 
-def save_request(phone, doc_link, screenshot_link, pages, copies, is_color, print_layout, pages_per_sheet, price):
+def save_request(phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price):
     """Save Pickup request to SQLite database."""
     try:
         conn = sqlite3.connect('requests.db')
         c = conn.cursor()
         c.execute('''INSERT INTO print_requests
-                     (phone, doc_link, screenshot_link, pages, copies, is_color, print_layout, pages_per_sheet, price, submitted_at, status)
+                     (phone, doc_link, screenshot_link, pages, copies, is_color, Layout, pages_per_sheet, price, submitted_at, status)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                  (phone, doc_link, screenshot_link, pages, copies, is_color, print_layout, pages_per_sheet, price, datetime.now().isoformat(), 'Pending'))
+                  (phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price, datetime.now().isoformat(), 'Pending'))
         conn.commit()
         logger.info(f"Saved Pickup request for phone {phone} to SQLite")
     except Exception as e:
@@ -240,7 +240,7 @@ with st.form("print_form", clear_on_submit=False):
                 payment_screenshot.seek(0)
                 with img_preview_area.container():
                     st.info("✅ Payment Screenshot Uploaded:")
-                    st.image(img, caption=st.session_state.current_ss_name, use_column_width=True)
+                    st.image(img, caption=st.session_state.current_ss_name, use_container_width=True)
             except Exception:
                 with img_preview_area.container():
                     st.info(f"✅ Screenshot uploaded: {st.session_state.current_ss_name} (preview unavailable).")

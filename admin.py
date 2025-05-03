@@ -16,12 +16,9 @@ def clean_old_completed_requests():
     try:
         conn = sqlite3.connect('requests.db')
         c = conn.cursor()
-        # Calculate cutoff time (12 hours ago)
         cutoff_time = (datetime.now() - timedelta(hours=12)).isoformat()
-        # Fetch completed requests older than cutoff
         c.execute("SELECT id, submitted_at FROM print_requests WHERE status = 'Done' AND submitted_at < ?", (cutoff_time,))
         old_requests = c.fetchall()
-        # Delete old requests
         for request_id, submitted_at in old_requests:
             c.execute("DELETE FROM print_requests WHERE id = ?", (request_id,))
             logger.info(f"Deleted completed request ID {request_id} submitted at {submitted_at}")
@@ -100,7 +97,7 @@ st.write("### Incomplete Pickup Requests")
 if pending_requests:
     df_pending = pd.DataFrame(pending_requests, columns=[
         'ID', 'Phone', 'Doc Link', 'Screenshot Link', 'Pages', 'Copies',
-        'Color', 'Double-sided', 'Price', 'Submitted At', 'Status'
+        'Color', 'Layout', 'Pages per Sheet', 'Price', 'Submitted At', 'Status'
     ])
     for index, row in df_pending.iterrows():
         with st.expander(f"Request #{row['ID']} - Phone: {row['Phone']}"):
@@ -109,7 +106,8 @@ if pending_requests:
             st.write(f"**Pages**: {row['Pages']}")
             st.write(f"**Copies**: {row['Copies']}")
             st.write(f"**Color**: {'Yes' if row['Color'] else 'No'}")
-            st.write(f"**Double-sided**: {'Yes' if row['Double-sided'] else 'No'}")
+            st.write(f"**Layout**: {row['Layout']}")
+            st.write(f"**Pages per Sheet**: {row['Pages per Sheet']}")
             st.write(f"**Price**: ₹{row['Price']:.2f}")
             st.write(f"**Submitted At**: {row['Submitted At']}")
             if st.button("Mark as Done", key=f"done_{row['ID']}"):
@@ -125,7 +123,7 @@ st.write("### Completed Pickup Requests")
 if completed_requests:
     df_completed = pd.DataFrame(completed_requests, columns=[
         'ID', 'Phone', 'Doc Link', 'Screenshot Link', 'Pages', 'Copies',
-        'Color', 'Double-sided', 'Price', 'Submitted At', 'Status'
+        'Color', 'Layout', 'Pages per Sheet', 'Price', 'Submitted At', 'Status'
     ])
     for index, row in df_completed.iterrows():
         with st.expander(f"Request #{row['ID']} - Phone: {row['Phone']}"):
@@ -134,7 +132,8 @@ if completed_requests:
             st.write(f"**Pages**: {row['Pages']}")
             st.write(f"**Copies**: {row['Copies']}")
             st.write(f"**Color**: {'Yes' if row['Color'] else 'No'}")
-            st.write(f"**Double-sided**: {'Yes' if row['Double-sided'] else 'No'}")
+            st.write(f"**Layout**: {row['Layout']}")
+            st.write(f"**Pages per Sheet**: {row['Pages per Sheet']}")
             st.write(f"**Price**: ₹{row['Price']:.2f}")
             st.write(f"**Submitted At**: {row['Submitted At']}")
 else:
