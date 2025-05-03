@@ -47,6 +47,13 @@ def init_db():
                       submitted_at TEXT,
                       status TEXT)''')
         conn.commit()
+        # Verify table creation
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
+        table_exists = c.fetchone()
+        if not table_exists:
+            logger.error("Failed to create print_requests table")
+            st.error("Failed to create print_requests table in database")
+            return False
         # Verify schema
         c.execute("PRAGMA table_info(print_requests)")
         columns = [info[1] for info in c.fetchall()]
@@ -56,9 +63,13 @@ def init_db():
             missing = [col for col in expected_columns if col not in columns]
             logger.error(f"Schema missing columns: {missing}")
             st.error(f"Database schema error: Missing columns {missing}")
+            return False
+        logger.info("print_requests table verified successfully")
+        return True
     except sqlite3.Error as e:
         logger.error(f"Failed to initialize SQLite database: {str(e)}\n{traceback.format_exc()}")
         st.error(f"Database initialization error: {str(e)}")
+        return False
     finally:
         conn.close()
 
@@ -67,7 +78,16 @@ def save_request(phone, doc_link, screenshot_link, pages, copies, is_color, layo
     try:
         conn = sqlite3.connect('requests.db', timeout=30)
         c = conn.cursor()
-        # Verify schema before insert
+        # Check if table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
+        table_exists = c.fetchone()
+        if not table_exists:
+            logger.warning("print_requests table missing. Attempting to create...")
+            if not init_db():
+                logger.error("Failed to create print_requests table during save_request")
+                st.error("Failed to initialize database table. Please try again.")
+                return None
+        # Verify schema
         c.execute("PRAGMA table_info(print_requests)")
         columns = [info[1] for info in c.fetchall()]
         expected_columns = ['id', 'phone', 'doc_link', 'screenshot_link', 'pages', 'copies', 'is_color', 'Layout', 'pages_per_sheet', 'price', 'submitted_at', 'status']
@@ -205,7 +225,9 @@ if 'current_ss_name' not in st.session_state:
     st.session_state.current_ss_name = None
 
 # Initialize database
-init_db()
+if not init_db():
+    st.error("Failed to initialize database. Please try again or contact support.")
+    st.stop()
 
 # --- Input Form ---
 with st.form("print_form", clear_on_submit=False):

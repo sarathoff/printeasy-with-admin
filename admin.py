@@ -17,6 +17,11 @@ def clean_old_completed_requests():
     try:
         conn = sqlite3.connect('requests.db', timeout=10)
         c = conn.cursor()
+        # Check if table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
+        if not c.fetchone():
+            logger.warning("print_requests table does not exist. Skipping cleanup.")
+            return
         cutoff_time = (datetime.now() - timedelta(hours=12)).isoformat()
         c.execute("SELECT id, submitted_at FROM print_requests WHERE status = 'Done' AND submitted_at < ?", (cutoff_time,))
         old_requests = c.fetchall()
@@ -36,6 +41,12 @@ def mark_as_done(request_id):
     try:
         conn = sqlite3.connect('requests.db', timeout=10)
         c = conn.cursor()
+        # Check if table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
+        if not c.fetchone():
+            logger.error("print_requests table does not exist. Cannot mark request as Done.")
+            st.error("Database error: print_requests table missing. Please submit a request via PrintEasy first.")
+            return
         c.execute("UPDATE print_requests SET status = 'Done' WHERE id = ?", (request_id,))
         conn.commit()
         logger.info(f"Marked request {request_id} as Done")
@@ -50,6 +61,11 @@ def fetch_requests(status):
     try:
         conn = sqlite3.connect('requests.db', timeout=10)
         c = conn.cursor()
+        # Check if table exists
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
+        if not c.fetchone():
+            logger.warning(f"print_requests table does not exist. No {status.lower()} requests available.")
+            return []
         c.execute("SELECT * FROM print_requests WHERE status = ?", (status,))
         requests = c.fetchall()
         logger.info(f"Fetched {len(requests)} {status.lower()} requests")
@@ -110,11 +126,16 @@ if current_time - st.session_state['last_fetch_time'] >= POLL_INTERVAL:
     try:
         conn = sqlite3.connect('requests.db', timeout=10)
         c = conn.cursor()
-        c.execute("PRAGMA table_info(print_requests)")
-        columns = [info[1] for info in c.fetchall()]
-        logger.info(f"Database columns: {columns}")
-        if 'Layout' not in columns:
-            st.error("Database schema error: Missing 'Layout' column. Please recreate the database.")
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
+        if not c.fetchone():
+            logger.error("print_requests table does not exist. Please submit a request via PrintEasy first.")
+            st.error("Database error: print_requests table missing. Please submit a request via PrintEasy first.")
+        else:
+            c.execute("PRAGMA table_info(print_requests)")
+            columns = [info[1] for info in c.fetchall()]
+            logger.info(f"Database columns: {columns}")
+            if 'Layout' not in columns:
+                st.error("Database schema error: Missing 'Layout' column. Please recreate the database.")
     except sqlite3.Error as e:
         logger.error(f"Failed to verify schema: {str(e)}")
         st.error(f"Database error: {str(e)}")
@@ -150,7 +171,7 @@ if pending_requests:
                 st.success(f"Request #{row['ID']} moved to Completed!")
                 st.rerun()
 else:
-    st.info("No incomplete pickup requests found. If you recently submitted a request, it may not have saved correctly.")
+    st.info("No incomplete pickup requests found. If you recently submitted a request, ensure it was saved correctly or submit a new request via PrintEasy.")
     logger.info("No pending requests found")
 
 # Display Completed Section
@@ -178,4 +199,4 @@ else:
 # Trigger rerun for polling
 if current_time - st.session_state['last_fetch_time'] < POLL_INTERVAL:
     time.sleep(POLL_INTERVAL - (current_time - st.session_state['last_fetch_time']))
-    st.experimental_rerun()
+    st.rerun()
