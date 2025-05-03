@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def init_db():
     """Initialize SQLite database for Pickup requests."""
     try:
-        conn = sqlite3.connect('requests.db')
+        conn = sqlite3.connect('requests.db', timeout=10)
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS print_requests
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,27 +46,38 @@ def init_db():
                       submitted_at TEXT,
                       status TEXT)''')
         conn.commit()
-        logger.info("SQLite database initialized successfully with correct schema")
-    except Exception as e:
+        # Verify schema
+        c.execute("PRAGMA table_info(print_requests)")
+        columns = [info[1] for info in c.fetchall()]
+        logger.info(f"Database initialized. Columns: {columns}")
+        if 'Layout' not in columns:
+            logger.error("Schema missing 'Layout' column")
+            st.error("Database schema error: Missing 'Layout' column")
+    except sqlite3.Error as e:
         logger.error(f"Failed to initialize SQLite database: {str(e)}")
-        st.error(f"Database error: {str(e)}")
+        st.error(f"Database initialization error: {str(e)}")
     finally:
         conn.close()
 
 def save_request(phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price):
     """Save Pickup request to SQLite database."""
     try:
-        conn = sqlite3.connect('requests.db')
+        conn = sqlite3.connect('requests.db', timeout=10)
         c = conn.cursor()
         c.execute('''INSERT INTO print_requests
                      (phone, doc_link, screenshot_link, pages, copies, is_color, Layout, pages_per_sheet, price, submitted_at, status)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                   (phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price, datetime.now().isoformat(), 'Pending'))
         conn.commit()
-        logger.info(f"Saved Pickup request for phone {phone} to SQLite")
-    except Exception as e:
+        # Verify insertion
+        c.execute("SELECT id FROM print_requests WHERE phone = ? AND submitted_at = ?", (phone, datetime.now().isoformat()))
+        request_id = c.fetchone()
+        logger.info(f"Saved Pickup request for phone {phone} to SQLite. Request ID: {request_id}")
+        return request_id
+    except sqlite3.Error as e:
         logger.error(f"Failed to save request to SQLite: {str(e)}")
-        st.error(f"Database error: {str(e)}")
+        st.error(f"Database save error: {str(e)}")
+        return None
     finally:
         conn.close()
 
@@ -417,15 +428,20 @@ if submit_button:
         elif request_type_val == "Pickup (Send to Admin Panel)":
             # Save to SQLite
             status_text.info("Saving request to admin panel...")
-            save_request(
+            request_id = save_request(
                 phone_val, doc_link, screenshot_link, final_page_count, copies_val,
                 is_color_val, print_layout_val, pages_per_sheet_val, final_total_price
             )
-            progress_bar.progress(100)
-            status_text.success("✅ Success! Pickup request submitted to admin panel.")
-            time.sleep(1)
-            st.success("Your Pickup request has been sent to the admin panel for processing.")
-            logger.info("Pickup request saved to SQLite")
+            if request_id:
+                progress_bar.progress(100)
+                status_text.success(f"✅ Success! Pickup request submitted to admin panel (ID: {request_id}).")
+                time.sleep(1)
+                st.success("Your Pickup request has been sent to the admin panel for processing.")
+                logger.info("Pickup request saved to SQLite")
+            else:
+                st.error("Failed to save request to database. Please try again.")
+                logger.error("Failed to save Pickup request")
+                st.stop()
 
         # Mark as successful
         st.session_state.form_submitted_successfully = True

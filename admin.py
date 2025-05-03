@@ -14,7 +14,7 @@ st.set_page_config(page_title="PrintEasy Admin Panel", layout="wide")
 # Function to clean completed requests older than 12 hours
 def clean_old_completed_requests():
     try:
-        conn = sqlite3.connect('requests.db')
+        conn = sqlite3.connect('requests.db', timeout=10)
         c = conn.cursor()
         cutoff_time = (datetime.now() - timedelta(hours=12)).isoformat()
         c.execute("SELECT id, submitted_at FROM print_requests WHERE status = 'Done' AND submitted_at < ?", (cutoff_time,))
@@ -24,7 +24,7 @@ def clean_old_completed_requests():
             logger.info(f"Deleted completed request ID {request_id} submitted at {submitted_at}")
         conn.commit()
         logger.info(f"Cleaned {len(old_requests)} completed requests older than 12 hours")
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.error(f"Failed to clean old completed requests: {str(e)}")
         st.error(f"Database cleanup error: {str(e)}")
     finally:
@@ -33,12 +33,12 @@ def clean_old_completed_requests():
 # Function to mark request as done
 def mark_as_done(request_id):
     try:
-        conn = sqlite3.connect('requests.db')
+        conn = sqlite3.connect('requests.db', timeout=10)
         c = conn.cursor()
         c.execute("UPDATE print_requests SET status = 'Done' WHERE id = ?", (request_id,))
         conn.commit()
         logger.info(f"Marked request {request_id} as Done")
-    except Exception as e:
+    except sqlite3.Error as e:
         logger.error(f"Failed to mark request {request_id} as Done: {str(e)}")
         st.error(f"Database error: {str(e)}")
     finally:
@@ -77,7 +77,7 @@ clean_old_completed_requests()
 
 # Fetch pending and completed requests
 try:
-    conn = sqlite3.connect('requests.db')
+    conn = sqlite3.connect('requests.db', timeout=10)
     c = conn.cursor()
     c.execute("SELECT * FROM print_requests WHERE status = 'Pending'")
     pending_requests = c.fetchall()
@@ -86,7 +86,14 @@ try:
     c.execute("SELECT * FROM print_requests WHERE status = 'Done'")
     completed_requests = c.fetchall()
     logger.info(f"Fetched {len(completed_requests)} completed requests")
-except Exception as e:
+    
+    # Verify table exists and schema
+    c.execute("PRAGMA table_info(print_requests)")
+    columns = [info[1] for info in c.fetchall()]
+    logger.info(f"Database columns: {columns}")
+    if 'Layout' not in columns:
+        st.error("Database schema error: Missing 'Layout' column. Please recreate the database.")
+except sqlite3.Error as e:
     logger.error(f"Failed to fetch requests from SQLite: {str(e)}")
     st.error(f"Database error: {str(e)}")
 finally:
@@ -115,7 +122,7 @@ if pending_requests:
                 st.success(f"Request #{row['ID']} moved to Completed!")
                 st.rerun()
 else:
-    st.info("No incomplete pickup requests.")
+    st.info("No incomplete pickup requests found. If you recently submitted a request, it may not have saved correctly.")
     logger.info("No pending requests found")
 
 # Display Completed Section
@@ -137,5 +144,5 @@ if completed_requests:
             st.write(f"**Price**: ₹{row['Price']:.2f}")
             st.write(f"**Submitted At**: {row['Submitted At']}")
 else:
-    st.info("No completed pickup requests.")
+    st.info("No completed pickup requests found.")
     logger.info("No completed requests found")
