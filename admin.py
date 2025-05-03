@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 import logging
 from datetime import datetime, timedelta
+import time
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -44,6 +45,22 @@ def mark_as_done(request_id):
     finally:
         conn.close()
 
+# Function to fetch requests
+def fetch_requests(status):
+    try:
+        conn = sqlite3.connect('requests.db', timeout=10)
+        c = conn.cursor()
+        c.execute("SELECT * FROM print_requests WHERE status = ?", (status,))
+        requests = c.fetchall()
+        logger.info(f"Fetched {len(requests)} {status.lower()} requests")
+        return requests
+    except sqlite3.Error as e:
+        logger.error(f"Failed to fetch {status.lower()} requests from SQLite: {str(e)}")
+        st.error(f"Database error: {str(e)}")
+        return []
+    finally:
+        conn.close()
+
 # Password protection
 def check_password():
     if 'authenticated' not in st.session_state:
@@ -72,32 +89,43 @@ st.title("PrintEasy Admin Panel (Pickup Requests)")
 if not check_password():
     st.stop()
 
+# Initialize session state for polling
+if 'last_fetch_time' not in st.session_state:
+    st.session_state['last_fetch_time'] = 0
+if 'last_updated' not in st.session_state:
+    st.session_state['last_updated'] = datetime.now().isoformat()
+
 # Clean old completed requests
 clean_old_completed_requests()
 
-# Fetch pending and completed requests
-try:
-    conn = sqlite3.connect('requests.db', timeout=10)
-    c = conn.cursor()
-    c.execute("SELECT * FROM print_requests WHERE status = 'Pending'")
-    pending_requests = c.fetchall()
-    logger.info(f"Fetched {len(pending_requests)} pending requests")
-    
-    c.execute("SELECT * FROM print_requests WHERE status = 'Done'")
-    completed_requests = c.fetchall()
-    logger.info(f"Fetched {len(completed_requests)} completed requests")
-    
+# Polling mechanism
+POLL_INTERVAL = 5  # seconds
+current_time = time.time()
+if current_time - st.session_state['last_fetch_time'] >= POLL_INTERVAL:
+    st.session_state['last_fetch_time'] = current_time
+    st.session_state['last_updated'] = datetime.now().isoformat()
+    pending_requests = fetch_requests('Pending')
+    completed_requests = fetch_requests('Done')
     # Verify table exists and schema
-    c.execute("PRAGMA table_info(print_requests)")
-    columns = [info[1] for info in c.fetchall()]
-    logger.info(f"Database columns: {columns}")
-    if 'Layout' not in columns:
-        st.error("Database schema error: Missing 'Layout' column. Please recreate the database.")
-except sqlite3.Error as e:
-    logger.error(f"Failed to fetch requests from SQLite: {str(e)}")
-    st.error(f"Database error: {str(e)}")
-finally:
-    conn.close()
+    try:
+        conn = sqlite3.connect('requests.db', timeout=10)
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(print_requests)")
+        columns = [info[1] for info in c.fetchall()]
+        logger.info(f"Database columns: {columns}")
+        if 'Layout' not in columns:
+            st.error("Database schema error: Missing 'Layout' column. Please recreate the database.")
+    except sqlite3.Error as e:
+        logger.error(f"Failed to verify schema: {str(e)}")
+        st.error(f"Database error: {str(e)}")
+    finally:
+        conn.close()
+else:
+    pending_requests = fetch_requests('Pending')
+    completed_requests = fetch_requests('Done')
+
+# Display last updated time
+st.markdown(f"**Last updated:** {st.session_state['last_updated']}")
 
 # Display Incomplete Section
 st.write("### Incomplete Pickup Requests")
@@ -146,3 +174,8 @@ if completed_requests:
 else:
     st.info("No completed pickup requests found.")
     logger.info("No completed requests found")
+
+# Trigger rerun for polling
+if current_time - st.session_state['last_fetch_time'] < POLL_INTERVAL:
+    time.sleep(POLL_INTERVAL - (current_time - st.session_state['last_fetch_time']))
+    st.experimental_rerun()

@@ -5,6 +5,7 @@ import re
 import sqlite3
 from datetime import datetime
 import logging
+import traceback
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
@@ -23,14 +24,14 @@ COLOR_PRICE_PER_SIDE = 5.0  # Updated Color Price
 BW_PRICE_PER_SIDE = 2.0
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- Database Functions ---
 def init_db():
     """Initialize SQLite database for Pickup requests."""
     try:
-        conn = sqlite3.connect('requests.db', timeout=10)
+        conn = sqlite3.connect('requests.db', timeout=30)
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS print_requests
                      (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,12 +50,14 @@ def init_db():
         # Verify schema
         c.execute("PRAGMA table_info(print_requests)")
         columns = [info[1] for info in c.fetchall()]
+        expected_columns = ['id', 'phone', 'doc_link', 'screenshot_link', 'pages', 'copies', 'is_color', 'Layout', 'pages_per_sheet', 'price', 'submitted_at', 'status']
         logger.info(f"Database initialized. Columns: {columns}")
-        if 'Layout' not in columns:
-            logger.error("Schema missing 'Layout' column")
-            st.error("Database schema error: Missing 'Layout' column")
+        if not all(col in columns for col in expected_columns):
+            missing = [col for col in expected_columns if col not in columns]
+            logger.error(f"Schema missing columns: {missing}")
+            st.error(f"Database schema error: Missing columns {missing}")
     except sqlite3.Error as e:
-        logger.error(f"Failed to initialize SQLite database: {str(e)}")
+        logger.error(f"Failed to initialize SQLite database: {str(e)}\n{traceback.format_exc()}")
         st.error(f"Database initialization error: {str(e)}")
     finally:
         conn.close()
@@ -62,8 +65,21 @@ def init_db():
 def save_request(phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price):
     """Save Pickup request to SQLite database."""
     try:
-        conn = sqlite3.connect('requests.db', timeout=10)
+        conn = sqlite3.connect('requests.db', timeout=30)
         c = conn.cursor()
+        # Verify schema before insert
+        c.execute("PRAGMA table_info(print_requests)")
+        columns = [info[1] for info in c.fetchall()]
+        expected_columns = ['id', 'phone', 'doc_link', 'screenshot_link', 'pages', 'copies', 'is_color', 'Layout', 'pages_per_sheet', 'price', 'submitted_at', 'status']
+        if not all(col in columns for col in expected_columns):
+            missing = [col for col in expected_columns if col not in columns]
+            logger.error(f"Cannot save request. Schema missing columns: {missing}")
+            st.error(f"Database schema error: Missing columns {missing}")
+            return None
+        # Log input data
+        logger.debug(f"Saving request: phone={phone}, doc_link={doc_link}, screenshot_link={screenshot_link}, "
+                     f"pages={pages}, copies={copies}, is_color={is_color}, layout={layout}, "
+                     f"pages_per_sheet={pages_per_sheet}, price={price}")
         c.execute('''INSERT INTO print_requests
                      (phone, doc_link, screenshot_link, pages, copies, is_color, Layout, pages_per_sheet, price, submitted_at, status)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -72,11 +88,16 @@ def save_request(phone, doc_link, screenshot_link, pages, copies, is_color, layo
         # Verify insertion
         c.execute("SELECT id FROM print_requests WHERE phone = ? AND submitted_at = ?", (phone, datetime.now().isoformat()))
         request_id = c.fetchone()
-        logger.info(f"Saved Pickup request for phone {phone} to SQLite. Request ID: {request_id}")
-        return request_id
+        if request_id:
+            logger.info(f"Saved Pickup request for phone {phone} to SQLite. Request ID: {request_id[0]}")
+            return request_id[0]
+        else:
+            logger.error("Failed to verify request insertion: No matching record found")
+            st.error("Failed to verify request save. Please try again.")
+            return None
     except sqlite3.Error as e:
-        logger.error(f"Failed to save request to SQLite: {str(e)}")
-        st.error(f"Database save error: {str(e)}")
+        logger.error(f"Failed to save request to SQLite: {str(e)}\n{traceback.format_exc()}")
+        st.error(f"Database save error: {str(e)}. Please try again.")
         return None
     finally:
         conn.close()
@@ -447,7 +468,7 @@ if submit_button:
         st.session_state.form_submitted_successfully = True
 
     except Exception as e:
-        logger.error(f"Error processing {request_type_val} submission for {phone_val}: {e}", exc_info=True)
+        logger.error(f"Error processing {request_type_val} submission for {phone_val}: {e}\n{traceback.format_exc()}")
         st.error(f"An unexpected error occurred during submission: {e}")
         status_text.error("❌ Submission failed. Please check your files and try again.")
         progress_bar.empty()
