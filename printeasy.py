@@ -2,14 +2,14 @@ import streamlit as st
 import PyPDF2
 import io
 import re
-import sqlite3
 from datetime import datetime
 import logging
+import time
 import traceback
+from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-import time
 from PIL import Image  # To display image preview
 
 # --- Configuration ---
@@ -20,107 +20,57 @@ MAX_IMG_SIZE_BYTES = MAX_IMG_SIZE_MB * 1024 * 1024
 PHONE_REGEX = r'^\d{10}$'
 SHOP_NUMBER = st.secrets["shop_number"]
 FOLDER_ID = st.secrets["folder_id"]
-COLOR_PRICE_PER_SIDE = 5.0  # Updated Color Price
+SUPABASE_URL = st.secrets["supabase_url"]
+SUPABASE_KEY = st.secrets["supabase_key"]
+COLOR_PRICE_PER_SIDE = 5.0
 BW_PRICE_PER_SIDE = 2.0
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Database Functions ---
-def init_db():
-    """Initialize SQLite database for Pickup requests."""
+# --- Supabase Functions ---
+def init_supabase():
+    """Initialize Supabase client."""
     try:
-        conn = sqlite3.connect('requests.db', timeout=30)
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS print_requests
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      phone TEXT,
-                      doc_link TEXT,
-                      screenshot_link TEXT,
-                      pages INTEGER,
-                      copies INTEGER,
-                      is_color BOOLEAN,
-                      Layout TEXT,
-                      pages_per_sheet TEXT,
-                      price REAL,
-                      submitted_at TEXT,
-                      status TEXT)''')
-        conn.commit()
-        # Verify table creation
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
-        table_exists = c.fetchone()
-        if not table_exists:
-            logger.error("Failed to create print_requests table")
-            st.error("Failed to create print_requests table in database")
-            return False
-        # Verify schema
-        c.execute("PRAGMA table_info(print_requests)")
-        columns = [info[1] for info in c.fetchall()]
-        expected_columns = ['id', 'phone', 'doc_link', 'screenshot_link', 'pages', 'copies', 'is_color', 'Layout', 'pages_per_sheet', 'price', 'submitted_at', 'status']
-        logger.info(f"Database initialized. Columns: {columns}")
-        if not all(col in columns for col in expected_columns):
-            missing = [col for col in expected_columns if col not in columns]
-            logger.error(f"Schema missing columns: {missing}")
-            st.error(f"Database schema error: Missing columns {missing}")
-            return False
-        logger.info("print_requests table verified successfully")
-        return True
-    except sqlite3.Error as e:
-        logger.error(f"Failed to initialize SQLite database: {str(e)}\n{traceback.format_exc()}")
-        st.error(f"Database initialization error: {str(e)}")
-        return False
-    finally:
-        conn.close()
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        # Test connection
+        supabase.table("print_requests").select("*").limit(1).execute()
+        logger.info("Supabase initialized successfully")
+        return supabase
+    except Exception as e:
+        logger.error(f"Failed to initialize Supabase: {str(e)}\n{traceback.format_exc()}")
+        st.error(f"Failed to connect to database: {str(e)}")
+        return None
 
 def save_request(phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price):
-    """Save Pickup request to SQLite database."""
-    try:
-        conn = sqlite3.connect('requests.db', timeout=30)
-        c = conn.cursor()
-        # Check if table exists
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
-        table_exists = c.fetchone()
-        if not table_exists:
-            logger.warning("print_requests table missing. Attempting to create...")
-            if not init_db():
-                logger.error("Failed to create print_requests table during save_request")
-                st.error("Failed to initialize database table. Please try again.")
-                return None
-        # Verify schema
-        c.execute("PRAGMA table_info(print_requests)")
-        columns = [info[1] for info in c.fetchall()]
-        expected_columns = ['id', 'phone', 'doc_link', 'screenshot_link', 'pages', 'copies', 'is_color', 'Layout', 'pages_per_sheet', 'price', 'submitted_at', 'status']
-        if not all(col in columns for col in expected_columns):
-            missing = [col for col in expected_columns if col not in columns]
-            logger.error(f"Cannot save request. Schema missing columns: {missing}")
-            st.error(f"Database schema error: Missing columns {missing}")
-            return None
-        # Log input data
-        logger.debug(f"Saving request: phone={phone}, doc_link={doc_link}, screenshot_link={screenshot_link}, "
-                     f"pages={pages}, copies={copies}, is_color={is_color}, layout={layout}, "
-                     f"pages_per_sheet={pages_per_sheet}, price={price}")
-        c.execute('''INSERT INTO print_requests
-                     (phone, doc_link, screenshot_link, pages, copies, is_color, Layout, pages_per_sheet, price, submitted_at, status)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                  (phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price, datetime.now().isoformat(), 'Pending'))
-        conn.commit()
-        # Verify insertion
-        c.execute("SELECT id FROM print_requests WHERE phone = ? AND submitted_at = ?", (phone, datetime.now().isoformat()))
-        request_id = c.fetchone()
-        if request_id:
-            logger.info(f"Saved Pickup request for phone {phone} to SQLite. Request ID: {request_id[0]}")
-            return request_id[0]
-        else:
-            logger.error("Failed to verify request insertion: No matching record found")
-            st.error("Failed to verify request save. Please try again.")
-            return None
-    except sqlite3.Error as e:
-        logger.error(f"Failed to save request to SQLite: {str(e)}\n{traceback.format_exc()}")
-        st.error(f"Database save error: {str(e)}. Please try again.")
+    """Save Pickup request metadata to Supabase."""
+    supabase = init_supabase()
+    if not supabase:
         return None
-    finally:
-        conn.close()
+    try:
+        data = {
+            "phone": phone,
+            "doc_link": doc_link,
+            "screenshot_link": screenshot_link,
+            "pages": pages,
+            "copies": copies,
+            "is_color": is_color,
+            "Layout": layout,
+            "pages_per_sheet": pages_per_sheet,
+            "price": price,
+            "submitted_at": datetime.now().isoformat(),
+            "status": "Pending"
+        }
+        logger.debug(f"Saving request: {data}")
+        response = supabase.table("print_requests").insert(data).execute()
+        request_id = response.data[0]["id"]
+        logger.info(f"Saved Pickup request for phone {phone} to Supabase. Request ID: {request_id}")
+        return request_id
+    except Exception as e:
+        logger.error(f"Failed to save request to Supabase: {str(e)}\n{traceback.format_exc()}")
+        st.error(f"Failed to save request: {str(e)}")
+        return None
 
 # --- Helper Functions ---
 def validate_phone(phone):
@@ -224,8 +174,8 @@ if 'current_doc_name' not in st.session_state:
 if 'current_ss_name' not in st.session_state:
     st.session_state.current_ss_name = None
 
-# Initialize database
-if not init_db():
+# Initialize Supabase
+if not init_supabase():
     st.error("Failed to initialize database. Please try again or contact support.")
     st.stop()
 
@@ -254,10 +204,10 @@ with st.form("print_form", clear_on_submit=False):
             logger.info(f"Processed new PDF: {uploaded_file.name}, Pages: {st.session_state.page_count}")
         if st.session_state.page_count is not None and st.session_state.page_count > 0:
             with pdf_preview_area.container():
-                st.info(f"✅ Document: **{st.session_state.current_doc_name}** ({st.session_state.page_count} pages)")
+                st.info(f"✅ Document: *{st.session_state.current_doc_name}* ({st.session_state.page_count} pages)")
         elif st.session_state.page_count is None:
             with pdf_preview_area.container():
-                st.warning(f"⚠️ Could not read page count for {st.session_state.current_doc_name}.")
+                st.warning(f"⚠ Could not read page count for {st.session_state.current_doc_name}.")
     else:
         st.session_state.current_doc_name = None
         st.session_state.page_count = 0
@@ -285,7 +235,7 @@ with st.form("print_form", clear_on_submit=False):
             except Exception as e:
                 logger.error(f"Failed to create image preview for {st.session_state.current_ss_name}: {e}")
                 with img_preview_area.container():
-                    st.warning(f"⚠️ Could not display preview for {st.session_state.current_ss_name}.")
+                    st.warning(f"⚠ Could not display preview for {st.session_state.current_ss_name}.")
                     st.info("✅ Screenshot uploaded (preview unavailable).")
         elif st.session_state.current_ss_name:
             try:
@@ -344,8 +294,8 @@ with st.form("print_form", clear_on_submit=False):
     price_display_area = st.container()
     with price_display_area:
         if st.session_state.page_count is not None and st.session_state.page_count > 0:
-            st.write(f"**Document Pages:** {st.session_state.page_count}")
-            st.write(f"**Estimated Total Price:** ₹{st.session_state.total_price:.2f}")
+            st.write(f"*Document Pages:* {st.session_state.page_count}")
+            st.write(f"*Estimated Total Price:* ₹{st.session_state.total_price:.2f}")
             if not payment_screenshot:
                 st.warning("Please pay this amount and upload the payment screenshot.")
             else:
@@ -411,7 +361,7 @@ if submit_button:
         screenshot_file_name = f"{sanitized_phone}_{timestamp}_payment.{screenshot_ext}"
 
         # 3. Upload Files to Google Drive
-        status_text.info("☁️ Uploading document...")
+        status_text.info("☁ Uploading document...")
         doc_file_obj.seek(0)
         doc_content = doc_file_obj.getvalue()
         doc_link = upload_to_drive(doc_content, doc_file_name, FOLDER_ID)
@@ -421,7 +371,7 @@ if submit_button:
             st.error("Failed to upload document. Please try submitting again.")
             st.stop()
 
-        status_text.info("☁️ Uploading payment proof...")
+        status_text.info("☁ Uploading payment proof...")
         ss_file_obj.seek(0)
         screenshot_content = ss_file_obj.getvalue()
         screenshot_link = upload_to_drive(screenshot_content, screenshot_file_name, FOLDER_ID)
@@ -436,7 +386,7 @@ if submit_button:
             # Generate WhatsApp Message
             status_text.info("Preparing details for shopkeeper...")
             message_lines = [
-                "*New Urgent Print Request*",
+                "New Urgent Print Request",
                 f"Phone: {phone_val}",
                 f"Document Link: {doc_link}",
                 f"Payment Proof Link: {screenshot_link}",
@@ -469,7 +419,7 @@ if submit_button:
             logger.info(f"Generated WhatsApp link: {whatsapp_url}")
 
         elif request_type_val == "Pickup (Send to Admin Panel)":
-            # Save to SQLite
+            # Save metadata to Supabase
             status_text.info("Saving request to admin panel...")
             request_id = save_request(
                 phone_val, doc_link, screenshot_link, final_page_count, copies_val,
@@ -480,7 +430,7 @@ if submit_button:
                 status_text.success(f"✅ Success! Pickup request submitted to admin panel (ID: {request_id}).")
                 time.sleep(1)
                 st.success("Your Pickup request has been sent to the admin panel for processing.")
-                logger.info("Pickup request saved to SQLite")
+                logger.info("Pickup request saved to Supabase")
             else:
                 st.error("Failed to save request to database. Please try again.")
                 logger.error("Failed to save Pickup request")
