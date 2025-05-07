@@ -22,6 +22,7 @@ SUPABASE_URL = st.secrets["supabase_url"]
 SUPABASE_KEY = st.secrets["supabase_key"]
 COLOR_PRICE_PER_SIDE = 5.0
 BW_PRICE_PER_SIDE = 2.0
+UPI_LINK = "upi://pay?pa=sarathramesh.official-2@okaxis&pn=Sarath%20Ramesh&aid=uGICAgMCPkIyhMg"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -100,7 +101,7 @@ def save_request(phone, documents, screenshot_link):
         data = {
             "phone": phone,
             "screenshot_link": screenshot_link,
-            "documents": documents,  # Array of documents with preferences
+            "documents": documents,
             "submitted_at": datetime.now().isoformat(),
             "status": "Pending"
         }
@@ -120,7 +121,7 @@ st.markdown("Upload your documents and payment proof.")
 
 # Initialize session state
 if 'files_data' not in st.session_state:
-    st.session_state.files_data = []  # List of dicts: {name, content, page_count, preferences, doc_link}
+    st.session_state.files_data = []
 if 'total_price' not in st.session_state:
     st.session_state.total_price = 0.0
 if 'ss_link' not in st.session_state:
@@ -136,7 +137,6 @@ if not supabase:
 st.subheader("1. Upload Documents")
 st.markdown("Upload one or more PDFs and specify printing preferences for each.")
 
-# File uploader for multiple PDFs
 uploaded_files = st.file_uploader(
     f"Upload Documents (PDF only, max {MAX_DOC_SIZE_MB}MB per file)",
     type=["pdf"],
@@ -144,9 +144,7 @@ uploaded_files = st.file_uploader(
     key="doc_uploader"
 )
 
-# Process uploaded files
 if uploaded_files:
-    # Update files_data with new uploads
     new_files = []
     existing_names = {file_data['name'] for file_data in st.session_state.files_data}
     
@@ -175,16 +173,13 @@ if uploaded_files:
                 'doc_link': None
             })
     
-    # Append new files to session state
     st.session_state.files_data.extend(new_files)
 
-# Display uploaded files with preferences
 if st.session_state.files_data:
     st.markdown("### Uploaded Documents")
     total_price = 0.0
     for idx, file_data in enumerate(st.session_state.files_data):
         with st.expander(f"Document {idx + 1}: {file_data['name']} ({file_data['page_count']} pages)"):
-            # Printing preferences for each file
             col1, col2 = st.columns(2)
             with col1:
                 is_color = st.radio(
@@ -238,7 +233,6 @@ if st.session_state.files_data:
                 )
                 file_data['preferences']['custom_pages'] = custom_pages
 
-            # Calculate price for this file
             file_price = calculate_price(
                 file_data['page_count'],
                 file_data['preferences']['copies'],
@@ -248,7 +242,6 @@ if st.session_state.files_data:
             total_price += file_price
             st.write(f"*Price for this document:* ₹{file_price:.2f}")
 
-            # Upload to Google Drive if not already uploaded
             if not file_data['doc_link']:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 sanitized_name = re.sub(r'\W+', '_', file_data['name'].split('.')[0])
@@ -264,6 +257,18 @@ if st.session_state.files_data:
     st.session_state.total_price = total_price
     st.markdown("### Total Estimated Price")
     st.write(f"*Total Price for All Documents:* ₹{total_price:.2f}")
+
+    # --- New Section: Payment Link ---
+    st.subheader("Make Payment")
+    st.markdown(
+        f"""
+        Click the button below to make a payment of ₹{total_price:.2f} via UPI.
+        <a href="{UPI_LINK}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; font-weight: bold;">
+            Pay Now via UPI
+        </a>
+        """,
+        unsafe_allow_html=True
+    )
 else:
     st.warning("Please upload at least one document.")
     st.stop()
@@ -321,7 +326,6 @@ if st.button("Send Print Request"):
         st.error("❌ Missing required information.")
         st.stop()
 
-    # Prepare documents data for Supabase
     documents = [
         {
             "doc_link": file_data['doc_link'],
@@ -341,7 +345,6 @@ if st.button("Send Print Request"):
         for file_data in st.session_state.files_data
     ]
 
-    # Handle different request types
     if request_type == "Urgent (Send via WhatsApp)":
         message_lines = [
             "New Urgent Print Request",
@@ -387,7 +390,6 @@ if st.button("Send Print Request"):
         request_id = save_request(phone, documents, st.session_state.ss_link)
         if request_id:
             st.success(f"✅ Success! Pickup request submitted to admin panel (ID: {request_id}).")
-            # Reset session state
             st.session_state.files_data = []
             st.session_state.total_price = 0.0
             st.session_state.ss_link = None
