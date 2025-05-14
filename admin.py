@@ -12,7 +12,6 @@ ADMIN_PASSWORD = st.secrets["admin_password"]
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Global Supabase Client ---
 supabase = None
 try:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)

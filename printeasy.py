@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from urllib.parse import quote
 
-# --- Configuration ---
+
 MAX_DOC_SIZE_MB = 10
 MAX_IMG_SIZE_MB = 5
 MAX_DOC_SIZE_BYTES = MAX_DOC_SIZE_MB * 1024 * 1024
