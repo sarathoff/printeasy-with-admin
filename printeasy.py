@@ -23,13 +23,13 @@ SUPABASE_URL = st.secrets["supabase_url"]
 SUPABASE_KEY = st.secrets["supabase_key"]
 COLOR_PRICE_PER_SIDE = 5.0
 BW_PRICE_PER_SIDE = 2.0
-UPI_LINK = "upi://pay?pa=shameer0rit@okicici"
+UPI_LINK = "upi://pay?mode=02&pa=Q54612982@ybl&purpose=00&mc=0000&pn=PhonePeMerchant&orgid=180001&sign=MEUCIClit5g/3LiR7MzHlQ9AGQhPE517yNpbIOerwFLWAHhZAiEA5yn0qwwGSo2GNUX0TA9G6dpdla7T1JO/jtAbXrfbcoU="
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Global Supabase Client ---
+
 supabase = None
 try:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
@@ -38,7 +38,6 @@ except Exception as e:
     logger.error(f"Failed to initialize Supabase: {str(e)}")
     st.error(f"Failed to connect to database: {str(e)}")
 
-# --- Helper Functions ---
 def validate_phone(phone):
     """Checks if the phone number is exactly 10 digits."""
     return bool(phone and re.match(PHONE_REGEX, phone))
@@ -115,12 +114,11 @@ def save_request(phone, documents, screenshot_link):
         st.error(f"Failed to save request: {str(e)}")
         return None
 
-# --- Streamlit App UI ---
+
 st.set_page_config(page_title="PrintEasy", layout="centered")
 st.title("PrintEasy Service")
 st.markdown("Upload your documents and payment proof.")
 
-# Initialize session state
 if 'files_data' not in st.session_state:
     st.session_state.files_data = []
 if 'total_price' not in st.session_state:
@@ -130,11 +128,11 @@ if 'ss_link' not in st.session_state:
 if 'ss_content' not in st.session_state:
     st.session_state.ss_content = None
 
-# Stop if Supabase failed to initialize
+
 if not supabase:
     st.stop()
 
-# --- Step 1: Upload Documents ---
+
 st.subheader("1. Upload Documents")
 st.markdown("Upload one or more PDFs and specify printing preferences for each.")
 
@@ -259,7 +257,6 @@ if st.session_state.files_data:
     st.markdown("### Total Estimated Price")
     st.write(f"*Total Price for All Documents:* ₹{total_price:.2f}")
 
-    # --- New Section: Payment Link ---
     st.subheader("Make Payment")
     st.markdown(
         f"""
@@ -274,7 +271,6 @@ else:
     st.warning("Please upload at least one document.")
     st.stop()
 
-# --- Step 2: Enter Phone Number ---
 st.subheader("2. Your Details")
 phone = st.text_input(
     "Phone Number (10 digits)",
@@ -294,7 +290,6 @@ request_type = st.radio(
     horizontal=True
 )
 
-# --- Step 4: Upload Payment Proof ---
 st.subheader("4. Upload Payment Proof")
 payment_screenshot = st.file_uploader(
     f"Upload Payment Screenshot (JPG/PNG, max {MAX_IMG_SIZE_MB}MB)",
