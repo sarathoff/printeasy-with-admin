@@ -23,7 +23,7 @@ SUPABASE_URL = st.secrets["supabase_url"]
 SUPABASE_KEY = st.secrets["supabase_key"]
 COLOR_PRICE_PER_SIDE = 5.0
 BW_PRICE_PER_SIDE = 2.0
-UPI_LINK = "upi://pay?pa=sarathramesh.official-2@okaxis&pn=Sarath%20Ramesh&aid=uGICAgMCPkIyhMg"
+UPI_LINK = "upi://pay?pa=shameer0rit@okicici"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
