@@ -23,7 +23,7 @@ SUPABASE_URL = st.secrets["supabase_url"]
 SUPABASE_KEY = st.secrets["supabase_key"]
 COLOR_PRICE_PER_SIDE = 5.0
 BW_PRICE_PER_SIDE = 2.0
-UPI_LINK = "upi://pay?pa=Q54612982@ybl&pn=PhonePeMerchant&cu=INR"
+UPI_LINK = "intent://upi/pay?phoneNumber=+919876543210#Intent;package=com.google.android.apps.nbu.paisa.user;scheme=upi;end"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
