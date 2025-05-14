@@ -23,7 +23,7 @@ SUPABASE_URL = st.secrets["supabase_url"]
 SUPABASE_KEY = st.secrets["supabase_key"]
 COLOR_PRICE_PER_SIDE = 5.0
 BW_PRICE_PER_SIDE = 2.0
-UPI_LINK = "upi://pay?mode=02&pa=Q54612982@ybl&purpose=00&mc=0000&pn=PhonePeMerchant&orgid=180001&sign=MEUCIClit5g/3LiR7MzHlQ9AGQhPE517yNpbIOerwFLWAHhZAiEA5yn0qwwGSo2GNUX0TA9G6dpdla7T1JO/jtAbXrfbcoU="
+UPI_LINK = "upi://pay?pa=Q54612982@ybl&pn=PhonePeMerchant&cu=INR"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
