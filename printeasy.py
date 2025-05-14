@@ -1,5 +1,6 @@
 
 import streamlit as st
+import pyperclip
 import pypdf
 import io
 import re
@@ -18,7 +19,6 @@ MAX_DOC_SIZE_BYTES = MAX_DOC_SIZE_MB * 1024 * 1024
 MAX_IMG_SIZE_BYTES = MAX_IMG_SIZE_MB * 1024 * 1024
 PHONE_REGEX = r'^\d{10}$'
 SHOP_NUMBER = st.secrets["shop_number"]
-FOLDER_ID = st.secrets["folder_id"]
 SUPABASE_URL = st.secrets["supabase_url"]
 SUPABASE_KEY = st.secrets["supabase_key"]
 COLOR_PRICE_PER_SIDE = 5.0
@@ -258,21 +258,56 @@ if st.session_state.files_data:
     st.session_state.total_price = total_price
     st.markdown("### Total Estimated Price")
     st.write(f"*Total Price for All Documents:* ₹{total_price:.2f}")
+# --- New Payment Section ---
+st.subheader("Make Payment")
+st.markdown(
+    f"Pay ₹{total_price:.2f} via UPI by clicking 'Pay Now' or manually searching the phone number in your UPI app."
+)
 
-    # --- New Section: Payment Link ---
-    st.subheader("Make Payment")
-    st.markdown(
-        f"""
-        Click the button below to make a payment of ₹{total_price:.2f} via UPI.
-        <a href="{UPI_LINK}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; font-weight: bold;">
-            Pay Now via UPI
-        </a>
-        """,
-        unsafe_allow_html=True
+# Pay Now button
+if st.button("Pay Now"):
+    try:
+        pyperclip.copy(SHOP_NUMBER)
+        st.success(
+            f"Phone number {SHOP_NUMBER} copied to clipboard! "
+            f"Click [here](upi://pay) to open a UPI app, or manually open Google Pay, PhonePe, or BHIM "
+            f"and paste the phone number in the search bar."
+        )
+    except Exception as e:
+        st.error(
+            f"Failed to copy phone number. Manually copy: {SHOP_NUMBER} "
+            f"and open a UPI app to search for it."
+        )
+    st.info(
+        f"If no UPI app opens, install one from the "
+        f"[Play Store](https://play.google.com/store/search?q=upi) "
+        f"and search for {SHOP_NUMBER}."
     )
-else:
-    st.warning("Please upload at least one document.")
-    st.stop()
+
+# Phone number display with Copy button
+st.markdown(f"<p><strong>Phone Number:</strong> {SHOP_NUMBER}</p>", unsafe_allow_html=True)
+if st.button("Copy"):
+    try:
+        pyperclip.copy(SHOP_NUMBER)
+        st.success(f"Phone number {SHOP_NUMBER} copied to clipboard!")
+    except Exception as e:
+        st.error(f"Failed to copy phone number. Manually copy: {SHOP_NUMBER}")
+
+# Payment instructions
+st.markdown("<p><strong>Steps to Pay:</strong></p>", unsafe_allow_html=True)
+st.markdown(f"""
+    <ol>
+        <li>Click "Pay Now" to copy the phone number, or open your UPI app manually (Google Pay, PhonePe, BHIM, etc.).</li>
+        <li>If prompted, select your preferred UPI app.</li>
+        <li>Tap "Pay" or "New Payment."</li>
+        <li>Paste the phone number (<strong>{SHOP_NUMBER}</strong>) in the search bar (copied to clipboard).</li>
+        <li>Select the UPI ID linked to the number (e.g., PhonePeMerchant or similar).</li>
+        <li>Enter your amount (₹{total_price:.2f}), add a note (optional), and tap "Pay."</li>
+        <li>Enter your UPI PIN to complete.</li>
+    </ol>
+    <p>If you face issues, contact the merchant for a valid phone number or UPI ID.</p>
+""", unsafe_allow_html=True)
+
 
 # --- Step 2: Enter Phone Number ---
 st.subheader("2. Your Details")
