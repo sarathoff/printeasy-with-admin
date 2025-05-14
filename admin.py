@@ -1,202 +1,177 @@
 import streamlit as st
-import sqlite3
-import pandas as pd
 import logging
-from datetime import datetime, timedelta
-import time
+from supabase import create_client, Client
+from datetime import datetime
+
+# --- Configuration ---
+SUPABASE_URL = st.secrets["supabase_url"]
+SUPABASE_KEY = st.secrets["supabase_key"]
+ADMIN_PASSWORD = st.secrets["admin_password"]
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Configure Streamlit page
-st.set_page_config(page_title="PrintEasy Admin Panel", layout="wide")
+# --- Global Supabase Client ---
+supabase = None
+try:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.info("Supabase initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase: {str(e)}")
+    st.error(f"Failed to connect to database: {str(e)}")
 
-# Function to clean completed requests older than 12 hours
-def clean_old_completed_requests():
-    try:
-        conn = sqlite3.connect('requests.db', timeout=10)
-        c = conn.cursor()
-        # Check if table exists
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
-        if not c.fetchone():
-            logger.warning("print_requests table does not exist. Skipping cleanup.")
-            return
-        cutoff_time = (datetime.now() - timedelta(hours=12)).isoformat()
-        c.execute("SELECT id, submitted_at FROM print_requests WHERE status = 'Done' AND submitted_at < ?", (cutoff_time,))
-        old_requests = c.fetchall()
-        for request_id, submitted_at in old_requests:
-            c.execute("DELETE FROM print_requests WHERE id = ?", (request_id,))
-            logger.info(f"Deleted completed request ID {request_id} submitted at {submitted_at}")
-        conn.commit()
-        logger.info(f"Cleaned {len(old_requests)} completed requests older than 12 hours")
-    except sqlite3.Error as e:
-        logger.error(f"Failed to clean old completed requests: {str(e)}")
-        st.error(f"Database cleanup error: {str(e)}")
-    finally:
-        conn.close()
-
-# Function to mark request as done
-def mark_as_done(request_id):
-    try:
-        conn = sqlite3.connect('requests.db', timeout=10)
-        c = conn.cursor()
-        # Check if table exists
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
-        if not c.fetchone():
-            logger.error("print_requests table does not exist. Cannot mark request as Done.")
-            st.error("Database error: print_requests table missing. Please submit a request via PrintEasy first.")
-            return
-        c.execute("UPDATE print_requests SET status = 'Done' WHERE id = ?", (request_id,))
-        conn.commit()
-        logger.info(f"Marked request {request_id} as Done")
-    except sqlite3.Error as e:
-        logger.error(f"Failed to mark request {request_id} as Done: {str(e)}")
-        st.error(f"Database error: {str(e)}")
-    finally:
-        conn.close()
-
-# Function to fetch requests
-def fetch_requests(status):
-    try:
-        conn = sqlite3.connect('requests.db', timeout=10)
-        c = conn.cursor()
-        # Check if table exists
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
-        if not c.fetchone():
-            logger.warning(f"print_requests table does not exist. No {status.lower()} requests available.")
-            return []
-        c.execute("SELECT * FROM print_requests WHERE status = ?", (status,))
-        requests = c.fetchall()
-        logger.info(f"Fetched {len(requests)} {status.lower()} requests")
-        return requests
-    except sqlite3.Error as e:
-        logger.error(f"Failed to fetch {status.lower()} requests from SQLite: {str(e)}")
-        st.error(f"Database error: {str(e)}")
+# --- Supabase Functions ---
+def fetch_requests(status="Pending"):
+    """Fetch requests from Supabase based on status."""
+    if not supabase:
+        st.error("Database connection unavailable.")
         return []
-    finally:
-        conn.close()
-
-# Password protection
-def check_password():
-    if 'authenticated' not in st.session_state:
-        st.session_state['authenticated'] = False
-    if not st.session_state['authenticated']:
-        password = st.text_input("Enter Admin Password", type="password")
-        if st.button("Login"):
-            if password == st.secrets["admin_password"]:
-                st.session_state['authenticated'] = True
-                st.rerun()
-            else:
-                st.error("Incorrect password")
-                logger.error("Incorrect admin password entered")
-        return False
-    return True
-
-# Validate secrets
-if "admin_password" not in st.secrets:
-    logger.error("Missing admin_password in secrets.toml")
-    st.error("Configuration error: Missing admin_password in secrets.toml")
-    st.stop()
-
-# Streamlit app
-st.title("PrintEasy Admin Panel (Pickup Requests)")
-
-if not check_password():
-    st.stop()
-
-# Initialize session state for polling
-if 'last_fetch_time' not in st.session_state:
-    st.session_state['last_fetch_time'] = 0
-if 'last_updated' not in st.session_state:
-    st.session_state['last_updated'] = datetime.now().isoformat()
-
-# Clean old completed requests
-clean_old_completed_requests()
-
-# Polling mechanism
-POLL_INTERVAL = 5  # seconds
-current_time = time.time()
-if current_time - st.session_state['last_fetch_time'] >= POLL_INTERVAL:
-    st.session_state['last_fetch_time'] = current_time
-    st.session_state['last_updated'] = datetime.now().isoformat()
-    pending_requests = fetch_requests('Pending')
-    completed_requests = fetch_requests('Done')
-    # Verify table exists and schema
     try:
-        conn = sqlite3.connect('requests.db', timeout=10)
-        c = conn.cursor()
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
-        if not c.fetchone():
-            logger.error("print_requests table does not exist. Please submit a request via PrintEasy first.")
-            st.error("Database error: print_requests table missing. Please submit a request via PrintEasy first.")
+        response = supabase.table("print_requests").select("*").eq("status", status).order("submitted_at", desc=True).execute()
+        # Ensure response.data is a list, even if the query fails
+        return response.data if response.data is not None else []
+    except Exception as e:
+        logger.error(f"Failed to fetch requests: {str(e)}")
+        st.error(f"Failed to fetch requests: {str(e)}")
+        return []
+
+def update_request_status(request_id, new_status):
+    """Update the status of a request in Supabase."""
+    if not supabase:
+        st.error("Database connection unavailable.")
+        return False
+    try:
+        response = supabase.table("print_requests").update({"status": new_status}).eq("id", request_id).execute()
+        if response.data:
+            logger.info(f"Updated request ID {request_id} to status '{new_status}'")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Failed to update request ID {request_id}: {str(e)}")
+        st.error(f"Failed to update request: {str(e)}")
+        return False
+
+# --- Streamlit App UI ---
+st.set_page_config(page_title="PrintEasy Admin", layout="wide")
+st.title("PrintEasy Admin Panel")
+
+# Stop if Supabase failed to initialize
+if not supabase:
+    st.stop()
+
+# --- Admin Authentication ---
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.subheader("Admin Login")
+    password = st.text_input("Enter Admin Password", type="password")
+    if st.button("Login"):
+        if password == ADMIN_PASSWORD:
+            st.session_state.authenticated = True
+            st.success("Login successful!")
+            st.rerun()
         else:
-            c.execute("PRAGMA table_info(print_requests)")
-            columns = [info[1] for info in c.fetchall()]
-            logger.info(f"Database columns: {columns}")
-            if 'Layout' not in columns:
-                st.error("Database schema error: Missing 'Layout' column. Please recreate the database.")
-    except sqlite3.Error as e:
-        logger.error(f"Failed to verify schema: {str(e)}")
-        st.error(f"Database error: {str(e)}")
-    finally:
-        conn.close()
+            st.error("Incorrect password.")
+    st.stop()
+
+# --- Admin Dashboard ---
+st.subheader("Pending Requests")
+
+# Fetch and display pending requests
+pending_requests = fetch_requests("Pending")
+if not pending_requests:
+    st.info("No pending requests.")
 else:
-    pending_requests = fetch_requests('Pending')
-    completed_requests = fetch_requests('Done')
+    for request in pending_requests:
+        with st.expander(f"Request ID: {request['id']} | Phone: {request['phone']} | Submitted: {request['submitted_at']}"):
+            # Handle screenshot_link being None
+            screenshot_link = request.get('screenshot_link', 'Not provided')
+            st.write(f"**Payment Screenshot:** {'[View](' + screenshot_link + ')' if screenshot_link != 'Not provided' else 'Not provided'}")
+            
+            # Handle documents being None or empty
+            documents = request.get('documents', [])
+            if not documents:
+                st.write("**Documents:** No documents found.")
+                continue
+            
+            st.write("**Documents:**")
+            total_price = 0.0
+            for idx, doc in enumerate(documents, 1):
+                # Defensive checks for document fields
+                doc_link = doc.get('doc_link', 'Not provided')
+                pages = doc.get('pages', 0)
+                copies = doc.get('copies', 1)
+                is_color = doc.get('is_color', False)
+                layout = doc.get('layout', 'Unknown')
+                pages_per_sheet = doc.get('pages_per_sheet', 'Unknown')
+                page_selection = doc.get('page_selection', 'All Pages')
+                price = float(doc.get('price', 0.0))  # Ensure price is a float
+                
+                st.write(f"**Document {idx}:** {'[View](' + doc_link + ')' if doc_link != 'Not provided' else 'Not provided'}")
+                st.write(f"  - Pages: {pages}")
+                st.write(f"  - Copies: {copies}")
+                st.write(f"  - Mode: {'Color' if is_color else 'Black & White'}")
+                st.write(f"  - Layout: {layout}")
+                st.write(f"  - Pages per Sheet: {pages_per_sheet}")
+                st.write(f"  - Page Selection: {page_selection}")
+                st.write(f"  - Price: ₹{price:.2f}")
+                total_price += price
+            st.write(f"**Total Price:** ₹{total_price:.2f}")
+            
+            # Mark as Done button
+            if st.button(f"Mark as Done", key=f"done_{request['id']}"):
+                if update_request_status(request['id'], "Done"):
+                    st.success(f"Request ID {request['id']} marked as Done.")
+                    st.rerun()
 
-# Display last updated time
-st.markdown(f"**Last updated:** {st.session_state['last_updated']}")
-
-# Display Incomplete Section
-st.write("### Incomplete Pickup Requests")
-if pending_requests:
-    df_pending = pd.DataFrame(pending_requests, columns=[
-        'ID', 'Phone', 'Doc Link', 'Screenshot Link', 'Pages', 'Copies',
-        'Color', 'Layout', 'Pages per Sheet', 'Price', 'Submitted At', 'Status'
-    ])
-    for index, row in df_pending.iterrows():
-        with st.expander(f"Request #{row['ID']} - Phone: {row['Phone']}"):
-            st.write(f"**Document**: [{row['Doc Link']}]({row['Doc Link']})")
-            st.write(f"**Screenshot**: [{row['Screenshot Link']}]({row['Screenshot Link']})")
-            st.write(f"**Pages**: {row['Pages']}")
-            st.write(f"**Copies**: {row['Copies']}")
-            st.write(f"**Color**: {'Yes' if row['Color'] else 'No'}")
-            st.write(f"**Layout**: {row['Layout']}")
-            st.write(f"**Pages per Sheet**: {row['Pages per Sheet']}")
-            st.write(f"**Price**: ₹{row['Price']:.2f}")
-            st.write(f"**Submitted At**: {row['Submitted At']}")
-            if st.button("Mark as Done", key=f"done_{row['ID']}"):
-                mark_as_done(row['ID'])
-                st.success(f"Request #{row['ID']} moved to Completed!")
-                st.rerun()
+# --- Display Completed Requests ---
+st.subheader("Completed Requests")
+completed_requests = fetch_requests("Done")
+if not completed_requests:
+    st.info("No completed requests.")
 else:
-    st.info("No incomplete pickup requests found. If you recently submitted a request, ensure it was saved correctly or submit a new request via PrintEasy.")
-    logger.info("No pending requests found")
+    for request in completed_requests:
+        with st.expander(f"Request ID: {request['id']} | Phone: {request['phone']} | Submitted: {request['submitted_at']}"):
+            # Handle screenshot_link being None
+            screenshot_link = request.get('screenshot_link', 'Not provided')
+            st.write(f"**Payment Screenshot:** {'[View](' + screenshot_link + ')' if screenshot_link != 'Not provided' else 'Not provided'}")
+            
+            # Handle documents being None or empty
+            documents = request.get('documents', [])
+            if not documents:
+                st.write("**Documents:** No documents found.")
+                continue
+            
+            st.write("**Documents:**")
+            total_price = 0.0
+            for idx, doc in enumerate(documents, 1):
+                doc_link = doc.get('doc_link', 'Not provided')
+                pages = doc.get('pages', 0)
+                copies = doc.get('copies', 1)
+                is_color = doc.get('is_color', False)
+                layout = doc.get('layout', 'Unknown')
+                pages_per_sheet = doc.get('pages_per_sheet', 'Unknown')
+                page_selection = doc.get('page_selection', 'All Pages')
+                price = float(doc.get('price', 0.0))
+                
+                st.write(f"**Document {idx}:** {'[View](' + doc_link + ')' if doc_link != 'Not provided' else 'Not provided'}")
+                st.write(f"  - Pages: {pages}")
+                st.write(f"  - Copies: {copies}")
+                st.write(f"  - Mode: {'Color' if is_color else 'Black & White'}")
+                st.write(f"  - Layout: {layout}")
+                st.write(f"  - Pages per Sheet: {pages_per_sheet}")
+                st.write(f"  - Page Selection: {page_selection}")
+                st.write(f"  - Price: ₹{price:.2f}")
+                total_price += price
+            st.write(f"**Total Price:** ₹{total_price:.2f}")
 
-# Display Completed Section
-st.write("### Completed Pickup Requests")
-if completed_requests:
-    df_completed = pd.DataFrame(completed_requests, columns=[
-        'ID', 'Phone', 'Doc Link', 'Screenshot Link', 'Pages', 'Copies',
-        'Color', 'Layout', 'Pages per Sheet', 'Price', 'Submitted At', 'Status'
-    ])
-    for index, row in df_completed.iterrows():
-        with st.expander(f"Request #{row['ID']} - Phone: {row['Phone']}"):
-            st.write(f"**Document**: [{row['Doc Link']}]({row['Doc Link']})")
-            st.write(f"**Screenshot**: [{row['Screenshot Link']}]({row['Screenshot Link']})")
-            st.write(f"**Pages**: {row['Pages']}")
-            st.write(f"**Copies**: {row['Copies']}")
-            st.write(f"**Color**: {'Yes' if row['Color'] else 'No'}")
-            st.write(f"**Layout**: {row['Layout']}")
-            st.write(f"**Pages per Sheet**: {row['Pages per Sheet']}")
-            st.write(f"**Price**: ₹{row['Price']:.2f}")
-            st.write(f"**Submitted At**: {row['Submitted At']}")
-else:
-    st.info("No completed pickup requests found.")
-    logger.info("No completed requests found")
-
-# Trigger rerun for polling
-if current_time - st.session_state['last_fetch_time'] < POLL_INTERVAL:
-    time.sleep(POLL_INTERVAL - (current_time - st.session_state['last_fetch_time']))
+# --- Logout Button ---
+if st.button("Logout"):
+    st.session_state.authenticated = False
     st.rerun()
+
+# Footer
+st.markdown("---")
+st.caption("PrintEasy Admin | Manage Printing Requests")

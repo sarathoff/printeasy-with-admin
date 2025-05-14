@@ -1,16 +1,14 @@
 import streamlit as st
-import PyPDF2
+import pypdf
 import io
 import re
-import sqlite3
 from datetime import datetime
 import logging
-import traceback
+from supabase import create_client, Client
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-import time
-from PIL import Image  # To display image preview
+from urllib.parse import quote
 
 # --- Configuration ---
 MAX_DOC_SIZE_MB = 10
@@ -20,145 +18,52 @@ MAX_IMG_SIZE_BYTES = MAX_IMG_SIZE_MB * 1024 * 1024
 PHONE_REGEX = r'^\d{10}$'
 SHOP_NUMBER = st.secrets["shop_number"]
 FOLDER_ID = st.secrets["folder_id"]
-COLOR_PRICE_PER_SIDE = 5.0  # Updated Color Price
+SUPABASE_URL = st.secrets["supabase_url"]
+SUPABASE_KEY = st.secrets["supabase_key"]
+COLOR_PRICE_PER_SIDE = 5.0
 BW_PRICE_PER_SIDE = 2.0
+UPI_LINK = "upi://pay?pa=shameer0rit@okicici"
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- Database Functions ---
-def init_db():
-    """Initialize SQLite database for Pickup requests."""
-    try:
-        conn = sqlite3.connect('requests.db', timeout=30)
-        c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS print_requests
-                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                      phone TEXT,
-                      doc_link TEXT,
-                      screenshot_link TEXT,
-                      pages INTEGER,
-                      copies INTEGER,
-                      is_color BOOLEAN,
-                      Layout TEXT,
-                      pages_per_sheet TEXT,
-                      price REAL,
-                      submitted_at TEXT,
-                      status TEXT)''')
-        conn.commit()
-        # Verify table creation
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
-        table_exists = c.fetchone()
-        if not table_exists:
-            logger.error("Failed to create print_requests table")
-            st.error("Failed to create print_requests table in database")
-            return False
-        # Verify schema
-        c.execute("PRAGMA table_info(print_requests)")
-        columns = [info[1] for info in c.fetchall()]
-        expected_columns = ['id', 'phone', 'doc_link', 'screenshot_link', 'pages', 'copies', 'is_color', 'Layout', 'pages_per_sheet', 'price', 'submitted_at', 'status']
-        logger.info(f"Database initialized. Columns: {columns}")
-        if not all(col in columns for col in expected_columns):
-            missing = [col for col in expected_columns if col not in columns]
-            logger.error(f"Schema missing columns: {missing}")
-            st.error(f"Database schema error: Missing columns {missing}")
-            return False
-        logger.info("print_requests table verified successfully")
-        return True
-    except sqlite3.Error as e:
-        logger.error(f"Failed to initialize SQLite database: {str(e)}\n{traceback.format_exc()}")
-        st.error(f"Database initialization error: {str(e)}")
-        return False
-    finally:
-        conn.close()
-
-def save_request(phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price):
-    """Save Pickup request to SQLite database."""
-    try:
-        conn = sqlite3.connect('requests.db', timeout=30)
-        c = conn.cursor()
-        # Check if table exists
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='print_requests'")
-        table_exists = c.fetchone()
-        if not table_exists:
-            logger.warning("print_requests table missing. Attempting to create...")
-            if not init_db():
-                logger.error("Failed to create print_requests table during save_request")
-                st.error("Failed to initialize database table. Please try again.")
-                return None
-        # Verify schema
-        c.execute("PRAGMA table_info(print_requests)")
-        columns = [info[1] for info in c.fetchall()]
-        expected_columns = ['id', 'phone', 'doc_link', 'screenshot_link', 'pages', 'copies', 'is_color', 'Layout', 'pages_per_sheet', 'price', 'submitted_at', 'status']
-        if not all(col in columns for col in expected_columns):
-            missing = [col for col in expected_columns if col not in columns]
-            logger.error(f"Cannot save request. Schema missing columns: {missing}")
-            st.error(f"Database schema error: Missing columns {missing}")
-            return None
-        # Log input data
-        logger.debug(f"Saving request: phone={phone}, doc_link={doc_link}, screenshot_link={screenshot_link}, "
-                     f"pages={pages}, copies={copies}, is_color={is_color}, layout={layout}, "
-                     f"pages_per_sheet={pages_per_sheet}, price={price}")
-        c.execute('''INSERT INTO print_requests
-                     (phone, doc_link, screenshot_link, pages, copies, is_color, Layout, pages_per_sheet, price, submitted_at, status)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                  (phone, doc_link, screenshot_link, pages, copies, is_color, layout, pages_per_sheet, price, datetime.now().isoformat(), 'Pending'))
-        conn.commit()
-        # Verify insertion
-        c.execute("SELECT id FROM print_requests WHERE phone = ? AND submitted_at = ?", (phone, datetime.now().isoformat()))
-        request_id = c.fetchone()
-        if request_id:
-            logger.info(f"Saved Pickup request for phone {phone} to SQLite. Request ID: {request_id[0]}")
-            return request_id[0]
-        else:
-            logger.error("Failed to verify request insertion: No matching record found")
-            st.error("Failed to verify request save. Please try again.")
-            return None
-    except sqlite3.Error as e:
-        logger.error(f"Failed to save request to SQLite: {str(e)}\n{traceback.format_exc()}")
-        st.error(f"Database save error: {str(e)}. Please try again.")
-        return None
-    finally:
-        conn.close()
+# --- Global Supabase Client ---
+supabase = None
+try:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    logger.info("Supabase initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase: {str(e)}")
+    st.error(f"Failed to connect to database: {str(e)}")
 
 # --- Helper Functions ---
 def validate_phone(phone):
     """Checks if the phone number is exactly 10 digits."""
-    return bool(re.match(PHONE_REGEX, phone))
+    return bool(phone and re.match(PHONE_REGEX, phone))
 
-def get_pdf_page_count(file_uploader):
-    """Reads the uploaded PDF file and returns the page count."""
-    if file_uploader is None:
-        logger.warning("get_pdf_page_count called with None file_uploader.")
+def get_pdf_page_count(file_content):
+    """Reads the PDF file content and returns the page count."""
+    if not file_content:
+        logger.warning("get_pdf_page_count called with empty content.")
         return 0
     try:
-        file_uploader.seek(0)
-        file_bytes = file_uploader.getvalue()
-        file_uploader.seek(0)
-        temp_stream = io.BytesIO(file_bytes)
-        pdf_reader = PyPDF2.PdfReader(temp_stream)
+        pdf_reader = pypdf.PdfReader(io.BytesIO(file_content))
         count = len(pdf_reader.pages)
-        logger.info(f"Successfully read {count} pages from PDF.")
+        logger.info(f"Read {count} pages from PDF.")
         return count
-    except PyPDF2.errors.PdfReadError as e:
-        st.error(f"Error reading PDF: The file '{file_uploader.name}' might be corrupted or password-protected.")
-        logger.error(f"PdfReadError for {file_uploader.name}: {e}", exc_info=True)
-        return None
     except Exception as e:
-        st.error(f"An unexpected error occurred while reading the PDF '{file_uploader.name}': {e}")
-        logger.error(f"Unexpected PDF read error for {file_uploader.name}: {e}", exc_info=True)
-        return None
+        st.error(f"Error reading PDF: The file might be corrupted or password-protected. {str(e)}")
+        logger.error(f"PDF read error: {str(e)}")
+        return 0
 
 def calculate_price(page_count, copies, is_color, print_layout):
-    """Calculates the total printing price based on options."""
-    if page_count is None or page_count <= 0 or copies <= 0:
+    """Calculates the printing price for a single file."""
+    if page_count <= 0 or copies <= 0:
         return 0.0
     base_price_per_side = COLOR_PRICE_PER_SIDE if is_color else BW_PRICE_PER_SIDE
     price_multiplier = 0.5 if print_layout == "Double-sided" else 1.0
-    price_per_original_page = base_price_per_side * price_multiplier
-    total_price = page_count * price_per_original_page * copies
-    return total_price
+    return page_count * base_price_per_side * price_multiplier * copies
 
 def upload_to_drive(file_content, file_name, folder_id):
     """Uploads file content to a specific Google Drive folder."""
@@ -172,330 +77,326 @@ def upload_to_drive(file_content, file_name, folder_id):
             scopes=["https://www.googleapis.com/auth/drive.file"]
         )
         drive_service = build('drive', 'v3', credentials=creds)
-        logger.info(f"Attempting to upload '{file_name}' to Drive folder '{folder_id}'")
-        file_metadata = {
-            'name': file_name,
-            'parents': [folder_id]
-        }
-        media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype='application/octet-stream', resumable=True)
-        request = drive_service.files().create(
+        logger.info(f"Uploading '{file_name}' to Drive folder '{folder_id}'")
+        file_metadata = {'name': file_name, 'parents': [folder_id]}
+        media = MediaIoBaseUpload(io.BytesIO(file_content), mimetype='application/octet-stream')
+        file = drive_service.files().create(
             body=file_metadata,
             media_body=media,
             fields='id, webViewLink'
-        )
-        response = None
-        upload_progress = st.empty()
-        upload_progress.info(f"Uploading {file_name}...")
-        while response is None:
-            status, response = request.next_chunk()
-            if status:
-                logger.info(f"Upload {file_name}: {int(status.progress() * 100)}%")
-        upload_progress.empty()
-        file_id = response.get('id')
-        view_link = response.get('webViewLink')
-        logger.info(f"File '{file_name}' uploaded successfully with ID: {file_id}")
-        permission = {'type': 'anyone', 'role': 'reader'}
-        try:
-            drive_service.permissions().create(fileId=file_id, body=permission).execute()
-            logger.info(f"Permissions set for file ID: {file_id}")
-        except Exception as perm_e:
-            logger.error(f"Failed to set permissions for file {file_id}: {perm_e}", exc_info=True)
-            st.warning(f"Could not set sharing permissions for {file_name}. The shopkeeper might need access.")
-        return view_link
+        ).execute()
+        logger.info(f"File '{file_name}' uploaded successfully with ID: {file.get('id')}")
+        return file.get('webViewLink')
     except Exception as e:
-        logger.error(f"Error uploading '{file_name}' to Drive: {e}", exc_info=True)
-        st.error(f"Failed to upload {file_name} to Google Drive. Please try again later.")
+        logger.error(f"Error uploading '{file_name}' to Drive: {str(e)}")
+        st.error(f"Failed to upload {file_name} to Google Drive.")
+        return None
+
+def save_request(phone, documents, screenshot_link):
+    """Save Pickup request metadata to Supabase."""
+    if not supabase:
+        st.error("Database connection unavailable.")
+        return None
+    try:
+        data = {
+            "phone": phone,
+            "screenshot_link": screenshot_link,
+            "documents": documents,
+            "submitted_at": datetime.now().isoformat(),
+            "status": "Pending"
+        }
+        response = supabase.table("print_requests").insert(data).execute()
+        request_id = response.data[0]["id"]
+        logger.info(f"Saved Pickup request for phone {phone}. ID: {request_id}")
+        return request_id
+    except Exception as e:
+        logger.error(f"Failed to save request: {str(e)}")
+        st.error(f"Failed to save request: {str(e)}")
         return None
 
 # --- Streamlit App UI ---
 st.set_page_config(page_title="PrintEasy", layout="centered")
 st.title("PrintEasy Service")
-st.markdown("Upload your document and payment proof.")
+st.markdown("Upload your documents and payment proof.")
 
 # Initialize session state
-if 'page_count' not in st.session_state:
-    st.session_state.page_count = 0
+if 'files_data' not in st.session_state:
+    st.session_state.files_data = []
 if 'total_price' not in st.session_state:
     st.session_state.total_price = 0.0
-if 'form_submitted_successfully' not in st.session_state:
-    st.session_state.form_submitted_successfully = False
-if 'current_doc_name' not in st.session_state:
-    st.session_state.current_doc_name = None
-if 'current_ss_name' not in st.session_state:
-    st.session_state.current_ss_name = None
+if 'ss_link' not in st.session_state:
+    st.session_state.ss_link = None
+if 'ss_content' not in st.session_state:
+    st.session_state.ss_content = None
 
-# Initialize database
-if not init_db():
-    st.error("Failed to initialize database. Please try again or contact support.")
+# Stop if Supabase failed to initialize
+if not supabase:
     st.stop()
 
-# --- Input Form ---
-with st.form("print_form", clear_on_submit=False):
-    st.subheader("1. Your Details")
-    phone = st.text_input("Phone Number (10 digits)", max_chars=10, key="phone_input", help="Used for file naming.")
+# --- Step 1: Upload Documents ---
+st.subheader("1. Upload Documents")
+st.markdown("Upload one or more PDFs and specify printing preferences for each.")
 
-    st.markdown("---")
-    st.subheader("2. Upload Files")
+uploaded_files = st.file_uploader(
+    f"Upload Documents (PDF only, max {MAX_DOC_SIZE_MB}MB per file)",
+    type=["pdf"],
+    accept_multiple_files=True,
+    key="doc_uploader"
+)
 
-    # --- Document Upload ---
-    uploaded_file = st.file_uploader(
-        f"Upload Document (PDF only, max {MAX_DOC_SIZE_MB}MB)",
-        type=["pdf"],
-        accept_multiple_files=False,
-        key="doc_uploader",
-        help="Upload the document you want to print."
+if uploaded_files:
+    new_files = []
+    existing_names = {file_data['name'] for file_data in st.session_state.files_data}
+    
+    for uploaded_file in uploaded_files:
+        if uploaded_file.name not in existing_names:
+            content = uploaded_file.getvalue()
+            if len(content) > MAX_DOC_SIZE_BYTES:
+                st.error(f"Document '{uploaded_file.name}' exceeds {MAX_DOC_SIZE_MB}MB limit.")
+                continue
+            page_count = get_pdf_page_count(content)
+            if page_count == 0:
+                st.error(f"Could not read page count for '{uploaded_file.name}'.")
+                continue
+            new_files.append({
+                'name': uploaded_file.name,
+                'content': content,
+                'page_count': page_count,
+                'preferences': {
+                    'copies': 1,
+                    'is_color': False,
+                    'print_layout': "Single-sided",
+                    'pages_per_sheet': "1 page per side",
+                    'page_preference': "All Pages",
+                    'custom_pages': ""
+                },
+                'doc_link': None
+            })
+    
+    st.session_state.files_data.extend(new_files)
+
+if st.session_state.files_data:
+    st.markdown("### Uploaded Documents")
+    total_price = 0.0
+    for idx, file_data in enumerate(st.session_state.files_data):
+        with st.expander(f"Document {idx + 1}: {file_data['name']} ({file_data['page_count']} pages)"):
+            col1, col2 = st.columns(2)
+            with col1:
+                is_color = st.radio(
+                    "Print Mode",
+                    (f"⚫ Black & White (₹{BW_PRICE_PER_SIDE:.2f}/side)", f"🌈 Color (₹{COLOR_PRICE_PER_SIDE:.2f}/side)"),
+                    key=f"print_mode_{idx}",
+                    horizontal=True
+                )
+                file_data['preferences']['is_color'] = is_color.startswith("🌈")
+            with col2:
+                copies = st.number_input(
+                    "Number of Copies",
+                    min_value=1,
+                    max_value=20,
+                    value=file_data['preferences']['copies'],
+                    step=1,
+                    key=f"copies_input_{idx}"
+                )
+                file_data['preferences']['copies'] = copies
+
+            print_layout = st.radio(
+                "Print Layout",
+                ("Single-sided", "Double-sided"),
+                key=f"print_layout_{idx}",
+                index=0 if file_data['preferences']['print_layout'] == "Single-sided" else 1,
+                horizontal=True
+            )
+            file_data['preferences']['print_layout'] = print_layout
+
+            pages_per_sheet = st.selectbox(
+                "Pages per Sheet Side",
+                ("1 page per side", "2 pages per side"),
+                key=f"pages_per_sheet_{idx}",
+                index=0 if file_data['preferences']['pages_per_sheet'] == "1 page per side" else 1
+            )
+            file_data['preferences']['pages_per_sheet'] = pages_per_sheet
+
+            page_preference = st.radio(
+                "Page Preference",
+                ("All Pages", "Custom Pages"),
+                key=f"page_preference_{idx}",
+                index=0 if file_data['preferences']['page_preference'] == "All Pages" else 1,
+                horizontal=True
+            )
+            file_data['preferences']['page_preference'] = page_preference
+            if page_preference == "Custom Pages":
+                custom_pages = st.text_input(
+                    "Enter Page Numbers (e.g., 1-3, 5, 7-10)",
+                    key=f"custom_pages_input_{idx}",
+                    value=file_data['preferences']['custom_pages']
+                )
+                file_data['preferences']['custom_pages'] = custom_pages
+
+            file_price = calculate_price(
+                file_data['page_count'],
+                file_data['preferences']['copies'],
+                file_data['preferences']['is_color'],
+                file_data['preferences']['print_layout']
+            )
+            total_price += file_price
+            st.write(f"*Price for this document:* ₹{file_price:.2f}")
+
+            if not file_data['doc_link']:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                sanitized_name = re.sub(r'\W+', '_', file_data['name'].split('.')[0])
+                doc_file_name = f"{sanitized_name}_{timestamp}.pdf"
+                doc_link = upload_to_drive(file_data['content'], doc_file_name, FOLDER_ID)
+                if doc_link:
+                    file_data['doc_link'] = doc_link
+                    st.success(f"✅ File uploaded: [View Document]({doc_link})")
+                else:
+                    st.error(f"Failed to upload '{file_data['name']}'.")
+                    st.stop()
+
+    st.session_state.total_price = total_price
+    st.markdown("### Total Estimated Price")
+    st.write(f"*Total Price for All Documents:* ₹{total_price:.2f}")
+
+    # --- New Section: Payment Link ---
+    st.subheader("Make Payment")
+    st.markdown(
+        f"""
+        Click the button below to make a payment of ₹{total_price:.2f} via UPI.
+        <a href="{UPI_LINK}" target="_blank" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; font-weight: bold;">
+            Pay Now via UPI
+        </a>
+        """,
+        unsafe_allow_html=True
     )
-    pdf_preview_area = st.empty()
-    if uploaded_file:
-        if uploaded_file.name != st.session_state.get('current_doc_name'):
-            st.session_state.current_doc_name = uploaded_file.name
-            page_count_result = get_pdf_page_count(uploaded_file)
-            st.session_state.page_count = page_count_result if page_count_result is not None else 0
-            logger.info(f"Processed new PDF: {uploaded_file.name}, Pages: {st.session_state.page_count}")
-        if st.session_state.page_count is not None and st.session_state.page_count > 0:
-            with pdf_preview_area.container():
-                st.info(f"✅ Document: **{st.session_state.current_doc_name}** ({st.session_state.page_count} pages)")
-        elif st.session_state.page_count is None:
-            with pdf_preview_area.container():
-                st.warning(f"⚠️ Could not read page count for {st.session_state.current_doc_name}.")
-    else:
-        st.session_state.current_doc_name = None
-        st.session_state.page_count = 0
-        pdf_preview_area.empty()
+else:
+    st.warning("Please upload at least one document.")
+    st.stop()
 
-    # --- Payment Screenshot Upload ---
-    payment_screenshot = st.file_uploader(
-        f"Upload Payment Screenshot (JPG/PNG, max {MAX_IMG_SIZE_MB}MB)",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=False,
-        key="ss_uploader",
-        help="Upload proof of your payment (e.g., UPI screenshot)."
-    )
-    img_preview_area = st.empty()
-    if payment_screenshot:
-        if payment_screenshot.name != st.session_state.get('current_ss_name'):
-            st.session_state.current_ss_name = payment_screenshot.name
-            try:
-                payment_screenshot.seek(0)
-                img = Image.open(payment_screenshot)
-                payment_screenshot.seek(0)
-                with img_preview_area.container():
-                    st.info("✅ Payment Screenshot Uploaded:")
-                    st.image(img, caption=payment_screenshot.name, use_container_width=True)
-            except Exception as e:
-                logger.error(f"Failed to create image preview for {st.session_state.current_ss_name}: {e}")
-                with img_preview_area.container():
-                    st.warning(f"⚠️ Could not display preview for {st.session_state.current_ss_name}.")
-                    st.info("✅ Screenshot uploaded (preview unavailable).")
-        elif st.session_state.current_ss_name:
-            try:
-                payment_screenshot.seek(0)
-                img = Image.open(payment_screenshot)
-                payment_screenshot.seek(0)
-                with img_preview_area.container():
-                    st.info("✅ Payment Screenshot Uploaded:")
-                    st.image(img, caption=st.session_state.current_ss_name, use_container_width=True)
-            except Exception:
-                with img_preview_area.container():
-                    st.info(f"✅ Screenshot uploaded: {st.session_state.current_ss_name} (preview unavailable).")
-    else:
-        st.session_state.current_ss_name = None
-        img_preview_area.empty()
+# --- Step 2: Enter Phone Number ---
+st.subheader("2. Your Details")
+phone = st.text_input(
+    "Phone Number (10 digits)",
+    max_chars=10,
+    key="phone_input"
+)
+if not validate_phone(phone):
+    st.warning("⚠ Please enter a valid 10-digit phone number.")
+    st.stop()
 
-    st.markdown("---")
-    st.subheader("3. Printing Preferences")
+# --- Step 3: Request Type ---
+st.subheader("3. Request Type")
+request_type = st.radio(
+    "Request Type",
+    ("Urgent (Send via WhatsApp)", "Pickup (Send to Admin Panel)"),
+    key="request_type",
+    horizontal=True
+)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        print_mode = st.radio(
-            "Print Mode",
-            (f"⚫ Black & White (₹{BW_PRICE_PER_SIDE:.2f}/side)", f"🌈 Color (₹{COLOR_PRICE_PER_SIDE:.2f}/side)"),
-            key="print_mode",
-            horizontal=True
-        )
-        is_color = (print_mode == f"🌈 Color (₹{COLOR_PRICE_PER_SIDE:.2f}/side)")
+# --- Step 4: Upload Payment Proof ---
+st.subheader("4. Upload Payment Proof")
+payment_screenshot = st.file_uploader(
+    f"Upload Payment Screenshot (JPG/PNG, max {MAX_IMG_SIZE_MB}MB)",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=False,
+    key="ss_uploader"
+)
 
-    with col2:
-        copies = st.number_input(
-            "Number of Copies", min_value=1, max_value=20, value=1, step=1, key="copies_input"
-        )
+if payment_screenshot:
+    ss_content = payment_screenshot.getvalue()
+    if len(ss_content) > MAX_IMG_SIZE_BYTES:
+        st.error(f"Screenshot exceeds {MAX_IMG_SIZE_MB}MB limit.")
+        st.stop()
+    st.session_state.ss_content = ss_content
 
-    print_layout = st.radio(
-        "Print Layout", ("Single-sided", "Double-sided"), key="print_layout", index=0, horizontal=True
-    )
-
-    pages_per_sheet = st.selectbox(
-        "Pages per Sheet Side", ("1 page per side", "2 pages per side"), key="pages_per_sheet", index=0
-    )
-
-    request_type = st.radio(
-        "Request Type", ("Urgent (Send via WhatsApp)", "Pickup (Send to Admin Panel)"),
-        key="request_type", index=0, horizontal=True
-    )
-
-    st.markdown("---")
-    st.subheader("4. Review & Submit")
-
-    # --- Dynamic Price Calculation ---
-    st.session_state.total_price = calculate_price(
-        st.session_state.page_count, copies, is_color, print_layout
-    )
-
-    price_display_area = st.container()
-    with price_display_area:
-        if st.session_state.page_count is not None and st.session_state.page_count > 0:
-            st.write(f"**Document Pages:** {st.session_state.page_count}")
-            st.write(f"**Estimated Total Price:** ₹{st.session_state.total_price:.2f}")
-            if not payment_screenshot:
-                st.warning("Please pay this amount and upload the payment screenshot.")
-            else:
-                st.success("Price calculated. Please review details and submit.")
-        elif uploaded_file and st.session_state.page_count is None:
-            st.warning("Could not calculate price. Error reading PDF page count.")
-        elif uploaded_file:
-            st.info("Calculating price...")
+    if not st.session_state.ss_link:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        sanitized_name = re.sub(r'\W+', '_', payment_screenshot.name.split('.')[0])
+        ss_file_name = f"{sanitized_name}_{timestamp}.jpg"
+        ss_link = upload_to_drive(ss_content, ss_file_name, FOLDER_ID)
+        if ss_link:
+            st.session_state.ss_link = ss_link
+            st.success(f"✅ Payment screenshot uploaded: [View Screenshot]({ss_link})")
         else:
-            st.info("Upload a PDF document to see the estimated price.")
+            st.stop()
 
-    submit_button = st.form_submit_button("Send Print Request")
-
-# --- Post-Submission Logic ---
-if submit_button:
-    phone_val = st.session_state.phone_input
-    copies_val = st.session_state.copies_input
-    print_mode_val = st.session_state.print_mode
-    is_color_val = (print_mode_val == f"🌈 Color (₹{COLOR_PRICE_PER_SIDE:.2f}/side)")
-    print_layout_val = st.session_state.print_layout
-    pages_per_sheet_val = st.session_state.pages_per_sheet
-    request_type_val = st.session_state.request_type
-    final_page_count = st.session_state.page_count
-    final_total_price = st.session_state.total_price
-    doc_file_obj = uploaded_file
-    ss_file_obj = payment_screenshot
-
-    # 1. Validation
-    errors = []
-    if not validate_phone(phone_val):
-        errors.append("❌ Please enter a valid 10-digit phone number.")
-    if not doc_file_obj:
-        errors.append("❌ Please upload a document file (PDF).")
-    elif final_page_count is None or final_page_count <= 0:
-        errors.append("❌ Document has 0 pages or could not be read. Please upload a valid PDF.")
-    elif doc_file_obj.size > MAX_DOC_SIZE_BYTES:
-        errors.append(f"❌ Document file size exceeds {MAX_DOC_SIZE_MB}MB.")
-    if not ss_file_obj:
-        errors.append("❌ Please upload a payment screenshot (JPG/PNG).")
-    elif ss_file_obj.size > MAX_IMG_SIZE_BYTES:
-        errors.append(f"❌ Payment screenshot size exceeds {MAX_IMG_SIZE_MB}MB.")
-
-    if errors:
-        for error in errors:
-            st.error(error)
-        st.session_state.form_submitted_successfully = False
+# --- Step 5: Submit Form ---
+if st.button("Send Print Request"):
+    if not (all(file_data['doc_link'] for file_data in st.session_state.files_data) and st.session_state.ss_link and validate_phone(phone)):
+        st.error("❌ Missing required information.")
         st.stop()
 
-    # 2. Processing Valid Submission
-    st.session_state.form_submitted_successfully = False
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    try:
-        status_text.info("🔄 Processing your request...")
-        logger.info(f"Processing {request_type_val} submission for phone: {phone_val}")
-
-        # Generate unique filenames
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        sanitized_phone = re.sub(r'\D', '', phone_val)
-        doc_file_name = f"{sanitized_phone}_{timestamp}_doc.pdf"
-        screenshot_ext = ss_file_obj.name.split('.')[-1] if '.' in ss_file_obj.name else 'png'
-        screenshot_file_name = f"{sanitized_phone}_{timestamp}_payment.{screenshot_ext}"
-
-        # 3. Upload Files to Google Drive
-        status_text.info("☁️ Uploading document...")
-        doc_file_obj.seek(0)
-        doc_content = doc_file_obj.getvalue()
-        doc_link = upload_to_drive(doc_content, doc_file_name, FOLDER_ID)
-        progress_bar.progress(50)
-
-        if not doc_link:
-            st.error("Failed to upload document. Please try submitting again.")
-            st.stop()
-
-        status_text.info("☁️ Uploading payment proof...")
-        ss_file_obj.seek(0)
-        screenshot_content = ss_file_obj.getvalue()
-        screenshot_link = upload_to_drive(screenshot_content, screenshot_file_name, FOLDER_ID)
-        progress_bar.progress(90)
-
-        if not screenshot_link:
-            st.error("Failed to upload payment screenshot. Please try submitting again.")
-            st.stop()
-
-        # 4. Handle Request Type
-        if request_type_val == "Urgent (Send via WhatsApp)":
-            # Generate WhatsApp Message
-            status_text.info("Preparing details for shopkeeper...")
-            message_lines = [
-                "*New Urgent Print Request*",
-                f"Phone: {phone_val}",
-                f"Document Link: {doc_link}",
-                f"Payment Proof Link: {screenshot_link}",
-                f"Payment Status: Paid (Screenshot Uploaded)",
-                "--- Print Details ---",
-                f"Total Pages: {final_page_count}",
-                f"Copies: {copies_val}",
-                f"Mode: {'Color' if is_color_val else 'Black & White'}",
-                f"Layout: {print_layout_val}",
-                f"Pages per Sheet: {pages_per_sheet_val}",
-                f"Estimated Price: ₹{final_total_price:.2f}",
-                "---",
-                "Please confirm the order details."
-            ]
-            message = "\n".join(message_lines)
-            encoded_message = message.replace(' ', '%20').replace('\n', '%0A')
-            whatsapp_url = f"https://wa.me/{SHOP_NUMBER}?text={encoded_message}"
-
-            progress_bar.progress(100)
-            status_text.success("✅ Success! Files uploaded.")
-            time.sleep(1)
-
-            st.markdown(f"""
-                ### Your request is ready!
-                Click the button below to send the details to the shopkeeper via WhatsApp.
-                <a href="{whatsapp_url}" target="_blank" style="background-color: #25D366; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; font-weight: bold;">
-                    Send Details via WhatsApp
-                </a>
-            """, unsafe_allow_html=True)
-            logger.info(f"Generated WhatsApp link: {whatsapp_url}")
-
-        elif request_type_val == "Pickup (Send to Admin Panel)":
-            # Save to SQLite
-            status_text.info("Saving request to admin panel...")
-            request_id = save_request(
-                phone_val, doc_link, screenshot_link, final_page_count, copies_val,
-                is_color_val, print_layout_val, pages_per_sheet_val, final_total_price
+    documents = [
+        {
+            "doc_link": file_data['doc_link'],
+            "pages": file_data['page_count'],
+            "copies": file_data['preferences']['copies'],
+            "is_color": file_data['preferences']['is_color'],
+            "layout": file_data['preferences']['print_layout'],
+            "pages_per_sheet": file_data['preferences']['pages_per_sheet'],
+            "page_selection": file_data['preferences']['page_preference'] + (f" ({file_data['preferences']['custom_pages']})" if file_data['preferences']['page_preference'] == "Custom Pages" else ""),
+            "price": calculate_price(
+                file_data['page_count'],
+                file_data['preferences']['copies'],
+                file_data['preferences']['is_color'],
+                file_data['preferences']['print_layout']
             )
-            if request_id:
-                progress_bar.progress(100)
-                status_text.success(f"✅ Success! Pickup request submitted to admin panel (ID: {request_id}).")
-                time.sleep(1)
-                st.success("Your Pickup request has been sent to the admin panel for processing.")
-                logger.info("Pickup request saved to SQLite")
-            else:
-                st.error("Failed to save request to database. Please try again.")
-                logger.error("Failed to save Pickup request")
-                st.stop()
+        }
+        for file_data in st.session_state.files_data
+    ]
 
-        # Mark as successful
-        st.session_state.form_submitted_successfully = True
+    if request_type == "Urgent (Send via WhatsApp)":
+        message_lines = [
+            "New Urgent Print Request",
+            f"Phone: {phone}",
+            f"Payment Proof Link: {st.session_state.ss_link}",
+            f"Payment Status: Paid (Screenshot Uploaded)",
+            "--- Documents ---"
+        ]
+        for idx, doc in enumerate(documents, 1):
+            message_lines.extend([
+                f"Document {idx}:",
+                f"Link: {doc['doc_link']}",
+                f"Total Pages: {doc['pages']}",
+                f"Copies: {doc['copies']}",
+                f"Mode: {'Color' if doc['is_color'] else 'Black & White'}",
+                f"Layout: {doc['layout']}",
+                f"Pages per Sheet: {doc['pages_per_sheet']}",
+                f"Page Selection: {doc['page_selection']}",
+                f"Price: ₹{doc['price']:.2f}",
+                "---------"
+            ])
+        message_lines.extend([
+            f"Total Price: ₹{st.session_state.total_price:.2f}",
+            "---",
+            "Please confirm the order details."
+        ])
+        message = "\n".join(message_lines)
+        encoded_message = quote(message)
+        whatsapp_url = f"https://wa.me/{SHOP_NUMBER}?text={encoded_message}"
 
-    except Exception as e:
-        logger.error(f"Error processing {request_type_val} submission for {phone_val}: {e}\n{traceback.format_exc()}")
-        st.error(f"An unexpected error occurred during submission: {e}")
-        status_text.error("❌ Submission failed. Please check your files and try again.")
-        progress_bar.empty()
-        st.session_state.form_submitted_successfully = False
+        st.markdown(
+            f"""
+            ### Your request is ready!
+            Click the button below to send the details to the shopkeeper via WhatsApp.
+            <a href="{whatsapp_url}" target="_blank" style="background-color: #25D366; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; font-weight: bold;">
+                Send Details via WhatsApp
+            </a>
+            """,
+            unsafe_allow_html=True
+        )
 
-# Optional: Footer
+    elif request_type == "Pickup (Send to Admin Panel)":
+        request_id = save_request(phone, documents, st.session_state.ss_link)
+        if request_id:
+            st.success(f"✅ Success! Pickup request submitted to admin panel (ID: {request_id}).")
+            st.session_state.files_data = []
+            st.session_state.total_price = 0.0
+            st.session_state.ss_link = None
+            st.session_state.ss_content = None
+        else:
+            st.error("Failed to save request to database.")
+
+# Footer
 st.markdown("---")
-st.caption("PrintEasy | Convenient Printing")
+st.caption("PrintEasy | Convenient Printing Service")
