@@ -302,7 +302,6 @@ st.markdown(f"""
         <li>Tap "Pay" or "New Payment."</li>
         <li>Paste the phone number (<strong>{SHOP_NUMBER}</strong>) in the search bar (copied to clipboard).</li>
         <li>Select the UPI ID linked to the number (e.g., PhonePeMerchant or similar).</li>
-        <li>Enter your amount (₹{total_price:.2f}), add a note (optional), and tap "Pay."</li>
         <li>Enter your UPI PIN to complete.</li>
     </ol>
     <p>If you face issues, contact the merchant for a valid phone number or UPI ID.</p>
